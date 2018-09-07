@@ -4,7 +4,7 @@ xyz, REM = {}, {}
 stat_ind = {}
 OP, SP   = -1, 0
 # add more atoms if your system has
-atm_dict = {'1':'H', '6':'C', '7':'N', '8':'O', '16':'S', '26':'Fe'}
+atm_dict = {'1':'H', '6':'C', '7':'N', '8':'O', '16':'S', '26':'Fe', '11':'Na'}
 flag     = 'NULL'
 #ONIOM energy key word:
 # 'extrapolated energy'
@@ -101,13 +101,18 @@ print('REMARK ONIOM?: ' + str(vars().has_key('ONIO')))
 print('REMARK stationary_points, opt_steps: ' + str(SP) + ', ' + str(OP))
 print(tuple(['REMARK', len(REM), len(xyz), len(stat_ind), SP, OP, vars().has_key('ONIO')]))
 
+#print(OP, eOP, len(REM), REM, len(xyz))
+
 if eOP == 'all':
    for i in range(0, len(REM)):
       print(''.join(tuple(REM[str(i)] + xyz[str(i)])).rstrip('\n'))
 #     print(''.join(tuple(xyz[str(i)])).rstrip('\n'))
       print('TER\nENDMDL')
 elif eOP == 'end':
-   print(''.join(tuple(REM[str(OP - 1)] + xyz[str(OP)])))
+   if len(REM) == 0:
+      print(''.join(tuple(xyz[str(OP)])))
+   else:
+      print(''.join(tuple(REM[str(OP - 1)] + xyz[str(OP)])))
 elif eOP == 'steps':
    print('The optimization/scan went through: ' + str(OP) + ' Steps')
    print('There is ' + str(SP) + ' Stationary points')
