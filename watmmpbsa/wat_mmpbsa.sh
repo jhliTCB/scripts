@@ -393,7 +393,14 @@ SLEEP 1 10 1
 
 #bzip2 the temp files:
 cd ${OUT_DIR}/running_dir
-find | grep "_MMPBSA_\|/com\|/rec\|/lig\|log$" | sed /bz2/d | xargs bzip2 &
+if [ $mmflag -eq 1 ] && [ $nmflag -eq 1 ]; then
+   RUNNING_DIR="GB_igb${igb}_wat${cutoff}\|$NM_DIR"
+elif [ $mmflag -eq 1 ] && [ $nmflag -eq 0 ]; then
+   RUNNING_DIR="GB_igb${igb}_wat${cutoff}"
+elif [ $mmflag -eq 0 ] && [ $nmflag -eq 1 ]; then
+   RUNNING_DIR="$NM_DIR"
+fi
+find | grep "$RUNNING_DIR" | grep "_MMPBSA_\|/com\|/rec\|/lig\|log$" | sed /bz2/d | xargs bzip2 &
 
 # Summary
 cd ${OUT_DIR}/running_dir
