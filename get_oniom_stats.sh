@@ -53,6 +53,10 @@ fi
 
 i=1
 for f in $(echo $*); do
+   if [ ! -f $f ]; then
+      echo "$f not found!"
+      continue
+   fi
    if [ $f != $flag ] && [ $i -eq 1 ]; then
       get_ener $f $flag 'Title'
       ((i+=1))
