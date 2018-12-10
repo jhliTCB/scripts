@@ -25,9 +25,9 @@ get_ener()
 log=$1
 flag=$2
 if [ $flag = 'SP' ]; then
-   Title=$(echo -e "\n#Log_name ONIOM_low-model ONIOM_high-model ONIOM_low-real ONIOM_extr" | awk '{printf "%24s%18s%24s%18s%24s\n", $1,$2,$3,$4,$5}')
+   Title=$(echo -e "#Log_name ONIOM_low-model ONIOM_high-model ONIOM_low-real ONIOM_extr" | awk '{printf "%24s%18s%24s%18s%24s\n", $1,$2,$3,$4,$5}')
 elif [ $flag = 'freq' ]; then
-   Title=$(echo -e "\n#Log_name freq1 freq2 freq3 ZPE ONIOM_low-model ONIOM_high-model ONIOM_low-real ONIOM_extr" | awk '{printf "%24s%10s%7s%7s%12s%18s%24s%18s%24s\n", $1,$2,$3,$4,$5,$6,$7,$8,$9}')
+   Title=$(echo -e "#Log_name freq1 freq2 freq3 ZPE ONIOM_low-model ONIOM_high-model ONIOM_low-real ONIOM_extr" | awk '{printf "%24s%10s%7s%7s%12s%18s%24s%18s%24s\n", $1,$2,$3,$4,$5,$6,$7,$8,$9}')
    Freq=$(grep Frequencies $log | head -1 | awk '{print $3,$4,$5}')
    ZPE=$(grep 'correction=' $log | awk '{print $3}')
 fi
