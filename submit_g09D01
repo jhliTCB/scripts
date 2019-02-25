@@ -1,0 +1,177 @@
+#!/bin/bash
+usage() {
+>&2 cat << EOF
+
+Simple gaussian sbatch wrapper written by jhli; available options:
+-A \${account} - The account used for the calculation; default is manually specified in this wrapper.
+-i \${inputfile} - Name of the gaussian input file; must be given!
+-p \${partition} - Which node type to use (e.g. fat), default is not used
+-E \${exclusive} - The exclusive option is used. default is not used
+-v \${gausversion} - Gaussian module to use. optional, default is g09D01
+-J \${jobname} - The name of the job (e.g. specified with the -J flag). Same as filenamenosuffix if not specified.
+-m \${memory} - The memory allocation in GB used by the Gaussian job. optional, default is taken from inputfile
+-l \${nproclinda} - Number of Linda workers that will be used. optional, default is the same with \$nodes
+-n \${nprocshared} - Number of threads each Linda worker will use. optional, default is taken from inputfile
+-t \${wtime} - Wall time limit for the calculation. must be given
+-W \${workdir} - The work-directory for the calculation. optional
+-N \${nodes} - Number of compute nodes that will be used. optional, default is 1
+-x \${gaubin} - Name of gaussian binary. default is 'g09', you can specific g09.orig
+-d \${dryrun} - don't submmit the job, just generate the sbatch script: ttt.sh
+-h help, display this message
+
+examples: (usually -m -n -N are not needed)
+$0 -i job.com -t 3-00:00:00 -A tu
+$0 -i job.com -A snic2017-34-43 -E -m 64 -n 32 -t 7-00:00:00
+$0 -i job.com -J Single_point -m 64 -t 10:00:00 -n 10
+$0 -i job.com -A tu -E -N 2 -n 32 -t 4-12:00:00
+
+EOF
+}
+
+gethost() {
+# b-an0 kebnekaise; t-an0 abisko
+hostlist=('tegner' 'b-an0' 't-an0' 'tetralith' 'rackham')
+for i in $(seq 0 4); do
+   [[ ! -z $(hostname | grep ${hostlist[i]}) ]] && HOST=${hostlist[i]}
+done
+[[ -z $HOST ]] && echo "Currently supported clusters are 'tegner' 'kebnekaise' 'abisko' 'tetralith' 'rackham'" && exit 1
+
+case $HOST in
+   'tegner') 
+   account=$(echo $1 | sed 's/snic//g; s/SNIC//g')
+   gausversion='gaussian/g09.D01'
+   additional=$(echo -e "export GAUSS_SCRDIR=/cfs/klemming/scratch/${USER:0:1}/${USER}/scratch_gaussian\ntest -d $GAUSS_SCRDIR || mkdir -p $GAUSS_SCRDIR")
+   ;;
+   'b-an0' | 't-an0')
+   MOPA='export MODULEPATH=$MODULEPATH:/pfs/nobackup/home/j/jhli/soft/my_modules'
+   gausversion='g09.d01'
+   ;;
+   'tetralith')
+   MOPA='export MODULEPATH=$MODULEPATH:/home/y_lijun/soft/modules'
+   gausversion='my_g09d01'
+   ;;
+   'rackham')
+   gausversion='gaussian/g09.d01'
+   additional=$(echo -e "ulimit -s $STACKLIMIT\nexport OMP_NUM_THREADS=1")
+   ;;
+esac
+}
+
+while getopts :A:i:p:Ev:J:m:n:t:W:N:dhx: opt; do
+case $opt in
+   A)   account=$OPTARG;;
+   i)   inputfile=$OPTARG;;
+   p)   partition=$OPTARG;;
+   E)   exclusive=1;;
+   v)   gausversion=$OPTARG;;
+   J)   jobname=$OPTARG;;
+   m)   memory=$OPTARG;;
+   n)   nprocshared=$OPTARG;;
+   t)   wtime=$OPTARG;;
+   W)   workdir=$OPTARG;;
+   N)   nodes=$OPTARG;;
+   x)   gaubin=$OPTARG;;
+   d)   dryrun=1;;
+   h)   usage; exit 0;;
+   ?)   echo unknown arguments; usage; exit 1;;
+esac
+
+if [[ -z $account ]]; then
+   account=snic2018-2-38
+else
+   case $account in
+   # account in PDC cluster doesn't contain snic
+   tu|snic2018-3-549) account=snic2018-3-549;;
+   hans|snic2018-2-38) account=snic2018-2-38;;
+   edu|edu18.summer) account=edu18.summer;;
+   esac
+fi
+done
+
+[[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
+filename=${inputfile%.*}
+filesuffix=${inputfile##*.}
+[[ -z $(grep mem $inputfile) ]] && echo "memory not specified in $inputfile" && exit 1 || imem=$(grep mem $inputfile | cut -f2 -d'=')
+[[ -z $(grep proc $inputfile) ]] && echo "proc not specified in $inputfile" && exit 1 || iproc=$(grep proc $inputfile | sed /linda/d | cut -f2 -d'=')
+[[ ! -z $(grep linda $inputfile) ]] && lindaflag=1 && linda=$(grep linda $inputfile | cut -f2 -d'=')
+[[ -z $(grep "\.chk$" $inputfile) ]] && echo "chk file not specified in $inputfile" && exit 1 || ichk=$(grep "\.chk$" $inputfile | cut -f2 -d'=')
+[[ ${ichk%.*} != $filename ]] && echo "chk filename in $inputfile is not $filename" && exit 1
+
+if [[ ! -z $partition ]]; then
+   PARTITION="#SBATCH -p $partition"
+   echo "Partition flag $partition is used, make sure it does exist in the current cluster"
+   echo "run \"scontrol show partition\" to check"
+fi
+
+[[ ! -z $exclusive ]] && EXCLUSIVE="#SBATCH --exclusive"
+[[ -z $gausversion ]] && gau_module="my_g09d01" # default is g09D01 on tetralith
+[[ -z $jobname ]] && jobname=${filename}
+#[[ -z $memory ]] && echo "memory must be specified in GB, e.g. -m 64" && exit 1
+
+if [[ ! -z $lindaflag  ]]; then
+   nproclinda=$linda
+   nodes=$linda
+fi
+if [[ -z $nprocshared ]]; then
+   nprocshared=$iproc
+elif [ $iproc ! -eq $nprocshared ]; then
+      echo "the number of processors is not matched with that in $inputfile"; exit 1
+fi
+
+[[ -z $wtime ]] && echo "please specific the wall time, e.g. -t 1-00:00:00" && exit 1
+[[ -z $workdir ]] && workdir=$PWD
+if [[ -z $nodes ]]; then
+   [[ -z $lindaflag ]] && nodes=1 || nodes=$nproclinda
+fi
+
+[[ -z $gaubin ]] && gaubin='g09'
+
+gethost $account
+   
+cat > ttt.sh << EOF
+# sbatch options set by $0
+#SBATCH --account=$account 
+#SBATCH --cpus-per-task=$nprocshared
+#SBATCH --ntasks-per-node=1
+#SBATCH --job-name=$jobname
+#SBATCH --nodes=$nodes
+#SBATCH --time=$wtime
+${EXCLUSIVE}
+${PARTITION}
+$additional
+
+JOB=$jobname
+WDIR=$workdir
+
+# Load the Gaussian module
+$MOPA
+module load $gausversion
+
+cd \$GAUSS_SCRDIR
+
+# Trap SIGTERM and copy the chk file if the job hits the walltime limit
+trap 'if [ -f \${JOB}.chk ]; then cp \${JOB}.chk \$WDIR; else echo "No named chk file"; fi; echo "SIGTERM was trapped"' SIGTERM
+
+srun hostname -s | sort -u > tsnet.nodes.\$SLURM_JOBID
+export GAUSS_LFLAGS='-nodefile tsnet.nodes.\$SLURM_JOBID -opt "Tsnet.Node.lindarsharg: ssh"'
+
+if [ -f \${WDIR}/\${JOB}.chk ]
+then
+    cp \${WDIR}/\${JOB}.chk .
+fi
+
+$gaubin < \${WDIR}/\${JOB}.${filesuffix} > \${WDIR}/\${JOB}.log &
+wait
+
+g_exit_status=\$?
+
+if [ -f \${JOB}.chk ]
+then
+    mv \${JOB}.chk \$WDIR
+fi
+
+exit \$g_exit_status
+EOF
+
+[[ -z $dryrun ]] && sbatch ttt.sh
+exit 0
