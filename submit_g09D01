@@ -141,7 +141,7 @@ ${EXCLUSIVE}
 ${PARTITION}
 $additional
 
-JOB=$jobname
+JOB=$filename
 WDIR=$workdir
 
 # Load the Gaussian module
