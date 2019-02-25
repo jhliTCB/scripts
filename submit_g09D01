@@ -129,6 +129,7 @@ fi
 gethost $account
    
 cat > ttt.sh << EOF
+#!/bin/bash -l
 # sbatch options set by $0
 #SBATCH --account=$account 
 #SBATCH --cpus-per-task=$nprocshared
