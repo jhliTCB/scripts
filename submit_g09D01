@@ -75,6 +75,7 @@ case $opt in
    h)   usage; exit 0;;
    ?)   echo unknown arguments; usage; exit 1;;
 esac
+done
 
 if [[ -z $account ]]; then
    account=snic2018-2-38
@@ -86,7 +87,6 @@ else
    edu|edu18.summer) account=edu18.summer;;
    esac
 fi
-done
 
 [[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
 filename=${inputfile%.*}
