@@ -40,7 +40,7 @@ case $HOST in
    'tegner') 
    account=$(echo $1 | sed 's/snic//g; s/SNIC//g')
    gausversion='gaussian/g09.D01'
-   additional=$(echo -e "export GAUSS_SCRDIR=/cfs/klemming/scratch/${USER:0:1}/${USER}/scratch_gaussian\ntest -d $GAUSS_SCRDIR || mkdir -p $GAUSS_SCRDIR")
+   additional=$(echo -e "export GAUSS_SCRDIR=/cfs/klemming/scratch/\${USER:0:1}/\${USER}/scratch_gaussian\ntest -d \$GAUSS_SCRDIR || mkdir -p \$GAUSS_SCRDIR")
    ;;
    'b-an0' | 't-an0')
    MOPA='export MODULEPATH=$MODULEPATH:/pfs/nobackup/home/j/jhli/soft/my_modules'
