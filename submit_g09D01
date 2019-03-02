@@ -7,23 +7,23 @@ Simple gaussian sbatch wrapper written by jhli; available options:
 -i \${inputfile} - Name of the gaussian input file; must be given!
 -p \${partition} - Which node type to use (e.g. fat), default is not used
 -E \${exclusive} - The exclusive option is used. default is not used
--v \${gausversion} - Gaussian module to use. optional, default is g09D01
--J \${jobname} - The name of the job (e.g. specified with the -J flag). Same as filenamenosuffix if not specified.
--m \${memory} - The memory allocation in GB used by the Gaussian job. optional, default is taken from inputfile
--l \${nproclinda} - Number of Linda workers that will be used. optional, default is the same with \$nodes
--n \${nprocshared} - Number of threads each Linda worker will use. optional, default is taken from inputfile
--t \${wtime} - Wall time limit for the calculation. must be given
--W \${workdir} - The work-directory for the calculation. optional
--N \${nodes} - Number of compute nodes that will be used. optional, default is 1
--x \${gaubin} - Name of gaussian binary. default is 'g09', you can specific g09.orig
+-v \${gausversion} - Gaussian module to use. optional, default is g09D01. other: g09E01 g16A01 g16B01
+-J \${jobname} - The name of the job (e.g. specified with the -J flag). Same as filename if not specified.
+-m \${memory} - The memory allocation in GB used by the Gaussian job. Optional, default is taken from inputfile
+-l \${nproclinda} - Number of Linda workers that will be used. Optional, default is the same with \$nodes
+-n \${nprocshared} - Number of threads each Linda worker will use. Optional, default is taken from inputfile
+-t \${wtime} - Wall time limit for the calculation. Must be given
+-W \${workdir} - The work-directory for the calculation. Optional
+-N \${nodes} - Number of compute nodes that will be used. Optional, default is 1
+-x \${gaubin} - Name of gaussian binary. default is 'g09', you can also specific g09.orig
 -d \${dryrun} - don't submmit the job, just generate the sbatch script: ttt.sh
 -h help, display this message
 
-examples: (usually -m -n -N are not needed)
-$0 -i job.com -t 3-00:00:00 -A tu
-$0 -i job.com -A snic2017-34-43 -E -m 64 -n 32 -t 7-00:00:00
-$0 -i job.com -J Single_point -m 64 -t 10:00:00 -n 10
-$0 -i job.com -A tu -E -N 2 -n 32 -t 4-12:00:00
+examples: (usually -m -n -N are not needed and taken from job input)
+$0 -i job.com -t 3-00:00:00 -A hans
+$0 -i job.com -t 7-00:00:00 -A snic2017-34-43 -E -m 64 -n 32
+$0 -i job.com -t 10:00:00 -J Single_point -m 64 -v g16B01
+$0 -i job.com -t 4-12:00:00 -A tu -E -N 2 -n 32 -d
 
 EOF
 }
@@ -39,19 +39,39 @@ done
 case $HOST in
    'tegner') 
    account=$(echo $1 | sed 's/snic//g; s/SNIC//g')
-   gausversion='gaussian/g09.D01'
+   gau_module='gaussian/g09.D01'
    additional=$(echo -e "export GAUSS_SCRDIR=/cfs/klemming/scratch/\${USER:0:1}/\${USER}/scratch_gaussian\ntest -d \$GAUSS_SCRDIR || mkdir -p \$GAUSS_SCRDIR")
    ;;
    'b-an0' | 't-an0')
    MOPA='export MODULEPATH=$MODULEPATH:/pfs/nobackup/home/j/jhli/soft/my_modules'
-   gausversion='g09.d01'
+   if [ -z $gausversion ]; then
+      gau_module='g09.d01'
+   else
+      case $gausversion in
+         'g09D01')   gau_module='g09.d01';;
+         'g09E01'|'gaussian/09.e.01-AVX')   gau_module='gaussian/09.e.01-AVX';;
+         'g16A03'|'gaussian/16.A.03-AVX2')   gau_module='gaussian/16.A.03-AVX2';;
+         'g16B01'|'gaussian/16.B.01-AVX2')   gau_module='gaussian/16.B.01-AVX2';;
+         *) echo "only g09D01, g09E01, g16A02 and g16B01 are available on kebnekaise. e.g. ... -v g16B01 ...\n" && exit 1;;
+      esac
+   fi
    ;;
    'tetralith')
    MOPA='export MODULEPATH=$MODULEPATH:/home/y_lijun/soft/modules'
-   gausversion='my_g09d01'
+   if [ -z $gausversion ]; then 
+      gau_module='my_g09d01'
+   else
+      case $gausversion in
+         'g09D01')   gau_module='my_g09d01';;
+         'g09E01'|'Gaussian/09.E.01-avx-nsc1-bdist')  gau_module='Gaussian/09.E.01-avx-nsc1-bdist';;
+         'g16B01'|'Gaussian/16.B.01-avx2-nsc1-bdist') gau_module='Gaussian/16.B.01-avx2-nsc1-bdist';;
+         *) echo -e "only g09D01, g09E01 and g16B01 are available on tetralith. e.g. ... -v g16B01 ...\n" && exit 1;;
+      esac
+   fi
    ;;
    'rackham')
-   gausversion='gaussian/g09.d01'
+   PARTITION='#SBATCH -p node'
+   gau_module='gaussian/g09.d01'
    additional=$(echo -e "ulimit -s $STACKLIMIT\nexport OMP_NUM_THREADS=1")
    ;;
 esac
@@ -89,22 +109,22 @@ else
 fi
 
 [[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
+[[ ! -f $inputfile ]] && echo "Could not find Gaussian input file: $inputfile" && exit 1
 filename=${inputfile%.*}
 filesuffix=${inputfile##*.}
-[[ -z $(grep mem $inputfile) ]] && echo "memory not specified in $inputfile" && exit 1 || imem=$(grep mem $inputfile | cut -f2 -d'=')
-[[ -z $(grep proc $inputfile) ]] && echo "proc not specified in $inputfile" && exit 1 || iproc=$(grep proc $inputfile | sed /linda/d | cut -f2 -d'=')
-[[ ! -z $(grep linda $inputfile) ]] && lindaflag=1 && linda=$(grep linda $inputfile | cut -f2 -d'=')
+[[ -z $(grep "^%" $inputfile | grep mem) ]] && echo "memory not specified in $inputfile" && exit 1 || imem=$(grep "^%" $inputfile | grep mem | cut -f2 -d'=')
+[[ -z $(grep "^%" $inputfile | grep proc) ]] && echo "proc not specified in $inputfile" && exit 1 || iproc=$(grep "^%" $inputfile | grep proc | sed /linda/d | cut -f2 -d'=')
+[[ ! -z $(grep "^%" $inputfile | grep linda) ]] && lindaflag=1 && linda=$(grep linda $inputfile | cut -f2 -d'=')
 [[ -z $(grep "\.chk$" $inputfile) ]] && echo "chk file not specified in $inputfile" && exit 1 || ichk=$(grep "\.chk$" $inputfile | cut -f2 -d'=')
 [[ ${ichk%.*} != $filename ]] && echo "chk filename in $inputfile is not $filename" && exit 1
 
 if [[ ! -z $partition ]]; then
    PARTITION="#SBATCH -p $partition"
    echo "Partition flag $partition is used, make sure it does exist in the current cluster"
-   echo "run \"scontrol show partition\" to check"
+   echo "run \"scontrol show partition\" to check\n"
 fi
 
 [[ ! -z $exclusive ]] && EXCLUSIVE="#SBATCH --exclusive"
-[[ -z $gausversion ]] && gau_module="my_g09d01" # default is g09D01 on tetralith
 [[ -z $jobname ]] && jobname=${filename}
 #[[ -z $memory ]] && echo "memory must be specified in GB, e.g. -m 64" && exit 1
 
@@ -141,12 +161,12 @@ ${EXCLUSIVE}
 ${PARTITION}
 $additional
 
-JOB=$jobname
+JOB=$filename
 WDIR=$workdir
 
 # Load the Gaussian module
 $MOPA
-module load $gausversion
+module load $gau_module
 
 cd \$GAUSS_SCRDIR
 
