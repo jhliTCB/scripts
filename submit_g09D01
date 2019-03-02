@@ -31,7 +31,7 @@ EOF
 gethost() {
 # b-an0 kebnekaise; t-an0 abisko
 hostlist=('tegner' 'b-an0' 't-an0' 'tetralith' 'rackham')
-for i in $(seq 0 4); do
+for i in $(seq 0 3); do
    [[ ! -z $(hostname | grep ${hostlist[i]}) ]] && HOST=${hostlist[i]}
 done
 [[ -z $HOST ]] && echo "Currently supported clusters are 'tegner' 'kebnekaise' 'abisko' 'tetralith' 'rackham'" && exit 1
