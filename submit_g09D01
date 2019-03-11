@@ -2,36 +2,51 @@
 usage() {
 >&2 cat << EOF
 
-Simple gaussian sbatch wrapper written by jhli; available options:
--A \${account} - The account used for the calculation; default is manually specified in this wrapper.
--i \${inputfile} - Name of the gaussian input file; must be given!
--p \${partition} - Which node type to use (e.g. fat), default is not used
--E \${exclusive} - The exclusive option is used. default is not used
--v \${gausversion} - Gaussian module to use. optional, default is g09D01. other: g09E01 g16A01 g16B01
--J \${jobname} - The name of the job (e.g. specified with the -J flag). Same as filename if not specified.
--m \${memory} - The memory allocation in GB used by the Gaussian job. Optional, default is taken from inputfile
--l \${nproclinda} - Number of Linda workers that will be used. Optional, default is the same with \$nodes
--n \${nprocshared} - Number of threads each Linda worker will use. Optional, default is taken from inputfile
--t \${wtime} - Wall time limit for the calculation. Must be given
--W \${workdir} - The work-directory for the calculation. Optional
--N \${nodes} - Number of compute nodes that will be used. Optional, default is 1
--x \${gaubin} - Name of gaussian binary. default is 'g09', you can also specific g09.orig
--d \${dryrun} - don't submmit the job, just generate the sbatch script: ttt.sh
+   Simple gaussian sbatch wrapper written by jhli
+   Available options:
+-i Name of the gaussian input file; must be given, file suffix: *.com
+-t Wall time limit for the calculation. Must be given; format: 1-00:00:00 or 12:00:00
+
+   Optional options:
+-A The account used for the calculation; default is manually specified in this wrapper. tu|hans
+-p Which node type to use (e.g. fat), default is not used
+-E The exclusive option is used. default is not used
+-v Gaussian module to use. optional, default is g09D01. other: g09E01 g16A01 g16B01
+-J The name of the job (e.g. specified with the -J flag). Same as filename if not specified.
+-m The memory allocation in GB used by the Gaussian job. Optional, default is taken from inputfile
+-l Number of Linda workers that will be used. Optional, default is the same with \$nodes
+-n Number of threads each Linda worker will use. Optional, default is taken from inputfile
+-t Wall time limit for the calculation. Must be given
+-W The work-directory for the calculation. Optional
+-N Number of compute nodes that will be used. Optional, default is 1
+-x Name of gaussian binary. default is 'g09', you can also specific g09.orig
+-d don't submmit the job, just generate the sbatch script: ttt.sh
 -h help, display this message
 
-examples: (usually -m -n -N are not needed and taken from job input)
-$0 -i job.com -t 3-00:00:00 -A hans
-$0 -i job.com -t 7-00:00:00 -A snic2017-34-43 -E -m 64 -n 32
-$0 -i job.com -t 10:00:00 -J Single_point -m 64 -v g16B01
-$0 -i job.com -t 4-12:00:00 -A tu -E -N 2 -n 32 -d
+   Examples: (The -m -n -N options seem to be not needed at all)
+$0 -i job.com -t 3-00:00:00
+$0 -i job.com -t 7-00:00:00 -A snic2017-34-43 -E
+$0 -i job.com -t 10:00:00 -J Single_point -v g16B01
+$0 -i job.com -t 4-12:00:00 -A tu -E -v g09E01 -d
 
 EOF
+}
+
+proc_input () {
+local inputfile=$1
+filename=${inputfile%.*}
+filesuffix=${inputfile##*.}
+[[ -z $(grep "^%" $inputfile | grep mem) ]] && echo "memory not specified in $inputfile" && exit 1 || imem=$(grep "^%" $inputfile | grep mem | cut -f2 -d'=')
+[[ -z $(grep "^%" $inputfile | grep proc) ]] && echo "proc not specified in $inputfile" && exit 1 || iproc=$(grep "^%" $inputfile | grep proc | sed /linda/d | cut -f2 -d'=')
+[[ ! -z $(grep "^%" $inputfile | grep -i linda) ]] && lindaflag=1 && linda=$(grep "^%" $inputfile | grep -i linda)
+[[ -z $(grep "\.chk$" $inputfile) ]] && echo "chk file not specified in $inputfile" && exit 1 || ichk=$(grep "^%" $inputfile | grep "\.chk$" | cut -f2 -d'=')
+[[ ${ichk%.*} != $filename ]] && echo "chk filename in $inputfile is not $filename" && exit 1
 }
 
 gethost() {
 # b-an0 kebnekaise; t-an0 abisko
 hostlist=('tegner' 'b-an0' 't-an0' 'tetralith' 'rackham')
-for i in $(seq 0 3); do
+for i in $(seq 0 4); do
    [[ ! -z $(hostname | grep ${hostlist[i]}) ]] && HOST=${hostlist[i]}
 done
 [[ -z $HOST ]] && echo "Currently supported clusters are 'tegner' 'kebnekaise' 'abisko' 'tetralith' 'rackham'" && exit 1
@@ -72,6 +87,7 @@ case $HOST in
    'rackham')
    PARTITION='#SBATCH -p node'
    gau_module='gaussian/g09.d01'
+   [[ ! -z $gausversion ]] && echo "Only g09D01 is available on rackham, omiting the version you specified...\n"
    additional=$(echo -e "ulimit -s $STACKLIMIT\nexport OMP_NUM_THREADS=1")
    ;;
 esac
@@ -80,25 +96,32 @@ esac
 while getopts :A:i:p:Ev:J:m:n:t:W:N:dhx: opt; do
 case $opt in
    A)   account=$OPTARG;;
-   i)   inputfile=$OPTARG;;
+   i)   inputfile=$OPTARG;;   # must be given
+   t)   wtime=$OPTARG;;       # must be given
    p)   partition=$OPTARG;;
    E)   exclusive=1;;
    v)   gausversion=$OPTARG;;
    J)   jobname=$OPTARG;;
-   m)   memory=$OPTARG;;
-   n)   nprocshared=$OPTARG;;
-   t)   wtime=$OPTARG;;
+   m)   memory=$OPTARG;;      # not used
+   n)   nprocshared=$OPTARG;; # not used
    W)   workdir=$OPTARG;;
-   N)   nodes=$OPTARG;;
-   x)   gaubin=$OPTARG;;
+   N)   nodes=$OPTARG;;       # not used
+   x)   gaubin=$OPTARG;;      # not used
    d)   dryrun=1;;
    h)   usage; exit 0;;
    ?)   echo unknown arguments; usage; exit 1;;
 esac
 done
 
+# process the "must be given" arguments
+[[ -z $wtime ]] && echo "please specific the wall time, e.g. -t 1-00:00:00" && exit 1
+[[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
+[[ ! -f $inputfile ]] && echo "Could not find Gaussian input file: $inputfile" && exit 1
+proc_input $inputfile
+
+# process the "optional" arguments
 if [[ -z $account ]]; then
-   account=snic2018-2-38
+   account=snic2018-2-38 # user modified default account
 else
    case $account in
    # account in PDC cluster doesn't contain snic
@@ -108,16 +131,6 @@ else
    esac
 fi
 
-[[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
-[[ ! -f $inputfile ]] && echo "Could not find Gaussian input file: $inputfile" && exit 1
-filename=${inputfile%.*}
-filesuffix=${inputfile##*.}
-[[ -z $(grep "^%" $inputfile | grep mem) ]] && echo "memory not specified in $inputfile" && exit 1 || imem=$(grep "^%" $inputfile | grep mem | cut -f2 -d'=')
-[[ -z $(grep "^%" $inputfile | grep proc) ]] && echo "proc not specified in $inputfile" && exit 1 || iproc=$(grep "^%" $inputfile | grep proc | sed /linda/d | cut -f2 -d'=')
-[[ ! -z $(grep "^%" $inputfile | grep linda) ]] && lindaflag=1 && linda=$(grep linda $inputfile | cut -f2 -d'=')
-[[ -z $(grep "\.chk$" $inputfile) ]] && echo "chk file not specified in $inputfile" && exit 1 || ichk=$(grep "\.chk$" $inputfile | cut -f2 -d'=')
-[[ ${ichk%.*} != $filename ]] && echo "chk filename in $inputfile is not $filename" && exit 1
-
 if [[ ! -z $partition ]]; then
    PARTITION="#SBATCH -p $partition"
    echo "Partition flag $partition is used, make sure it does exist in the current cluster"
@@ -126,24 +139,25 @@ fi
 
 [[ ! -z $exclusive ]] && EXCLUSIVE="#SBATCH --exclusive"
 [[ -z $jobname ]] && jobname=${filename}
-#[[ -z $memory ]] && echo "memory must be specified in GB, e.g. -m 64" && exit 1
 
 if [[ ! -z $lindaflag  ]]; then
-   nproclinda=$linda
-   nodes=$linda
-fi
-if [[ -z $nprocshared ]]; then
-   nprocshared=$iproc
-elif [ $iproc ! -eq $nprocshared ]; then
-      echo "the number of processors is not matched with that in $inputfile"; exit 1
+   Nlinda=$(echo  "$linda" | cut -f2 -d'=')
+   if [[ ! -z $(hostname | grep -i tetralith) ]]; then
+      [[ ${Nlinda:0:1} != 'n' ]] && echo -e "\nwrong Linda specification on tetralith. please use, e.g. %LindaWorkers=node1,node2\n See https://www.nsc.liu.se/software/installed/tetralith/gaussian for detail\n" && exit 1
+      nodes=$(echo "$Nlinda" | awk -F"," '{print NF}')
+      nproclinda=$nodes
+   elif [[ ! -z $(echo $linda | grep -i "nproclinda") ]]; then
+      nproclinda=$Nlinda
+      nodes=$Nlinda
+   else
+      echo "wrong linda specification! please use either %nproclinda=x on rackham or %LindaWorkers=node1,node2... on tetralith\n" && exit 1
+   fi
+else
+   nodes=1
+   nproclinda=1   
 fi
 
-[[ -z $wtime ]] && echo "please specific the wall time, e.g. -t 1-00:00:00" && exit 1
 [[ -z $workdir ]] && workdir=$PWD
-if [[ -z $nodes ]]; then
-   [[ -z $lindaflag ]] && nodes=1 || nodes=$nproclinda
-fi
-
 [[ -z $gaubin ]] && gaubin='g09'
 
 gethost $account
@@ -152,7 +166,7 @@ cat > ttt.sh << EOF
 #!/bin/bash -l
 # sbatch options set by $0
 #SBATCH --account=$account 
-#SBATCH --cpus-per-task=$nprocshared
+#SBATCH --cpus-per-task=$iproc
 #SBATCH --ntasks-per-node=1
 #SBATCH --job-name=$jobname
 #SBATCH --nodes=$nodes
