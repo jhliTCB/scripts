@@ -114,8 +114,9 @@ esac
 done
 
 # process the "must be given" arguments
+[[ $# -le 1 ]] && usage && exit 0
 [[ -z $wtime ]] && echo "please specific the wall time, e.g. -t 1-00:00:00" && exit 1
-[[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && usage && exit 1
+[[ -z $inputfile ]] && echo "Gaussian input with suffix must be specified!" && exit 1
 [[ ! -f $inputfile ]] && echo "Could not find Gaussian input file: $inputfile" && exit 1
 proc_input $inputfile
 
