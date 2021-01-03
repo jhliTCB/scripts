@@ -1,0 +1,30 @@
+#!/bin/bash
+#for lines, tput lines
+resize >& /dev/null
+US='user1,user2,user3,user4' # a list of users you want to track
+if [ $(tput cols) -lt 150 ]
+then
+    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %10R'
+else
+    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %Z'
+fi
+
+DF="$(echo -e "$format" | sed s/JN/20/g)"
+
+if [ -z $1 ]
+then
+   squeue -u $UL -o "$DF" | sort -k4,10
+elif [ ${1:0:1} = '-' ]
+then
+   squeue -u $UL $1 | sort -k4,10
+elif [ $(echo $1 | grep "^[0-9]" | grep "[0-9]$") -gt 1 ] 2> /dev/null
+then
+   NF="$(echo -e "$format" | sed s/JN/$1/g)"
+   squeue -u $UL -o "$NF" | sort -k4,10
+elif [ $1 = 'a' ]
+then
+   NF="$(echo -e "$format" | sed 's/JN/18/g; s/10R/16a/g; s/Z/16a/g')"
+   squeue -u $UL -o "$NF" | sort -k4,10
+else
+   squeue -u $UL -o "$DF" | sort -k4,10
+fi

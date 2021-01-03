@@ -1,0 +1,113 @@
+#!/bin/bash
+vncviewer='$my_usr/opt/thinlinc/lib/tlclient/vncviewer' # non-root: rpm2cpio tl-client-xx.rpm | cpio -div
+addr_lst=('192.168.1.101' '192.168.1.102' 'a.a.a.a' 'b.b.b.b')
+ssh_port='22' #default ssh port
+
+# COLORS # copied elsewhere
+CDEF=" \033[0m"                            # default color
+CCIN=" \033[0;36m"                         # info color
+CGSC=" \033[0;32m"                         # success color
+CRER=" \033[0;31m"                         # error color
+CWAR=" \033[0;33m"                         # warning color
+b_CDEF=" \033[1;37m"                       # bold default color
+b_CCIN=" \033[1;36m"                       # bold info color
+b_CGSC=" \033[1;32m"                       # bold success color
+b_CRER=" \033[1;31m"                       # bold error color
+b_CWAR=" \033[1;33m"                       # bold warning color
+
+USAGE ()
+{
+   printf "%s\n" "Usage: $0 [OPTIONS...]"
+   printf "\n%s\n" "OPTIONS:"
+   printf "  %-30s%s\n" "-u, --user USER" "Specify the username in remote server"
+   printf "  %-30s%s\n" "-sa, --ssh_address VARIANTS" "Specify the ssh address/alias, available alias: LMMD|beta|tetralith"
+   printf "  %-30s%s\n" "-N, --no_tty" "Do not open a TTY, just open the tunnel"
+   printf "  %-30s%s\n" "-rp, --remote_port NUMBER" "remote port forwarding, make sure it exists in remote server"
+   printf "  %-30s%s\n" "-lp, --local_port NUMBER" "local port forwarding, can be the same as remote port"
+   printf "  %-30s%s\n" "-ov, --open_vnc" "a flag 5that tells $0 to run the vncviewer after the port forwarding"
+   printf "  %-30s%s\n" "-h, --help" "print this message"
+   echo -e "   Example of forwarding: ${CCIN}${0} -u jhli -N -lp 5901 --remote_port 5977 -sa lmmd${CDEF}"
+   echo -e "   Example of vncviewer: ${CCIN}${0} -ov -lp 5901${CDEF}"
+}
+
+CHECK ()
+{
+grep1=$1
+grep2=$2
+ps_val=$(ps -ef | grep "$grep1" | grep "$grep2" | wc -l)
+echo $ps_val
+}
+
+while [[ $# -gt 0 ]]; do
+   case $1 in
+   -u | --user)
+   user=$2
+   shift 2
+   ;;
+   -N | --no_tty)
+   notty='true'
+   shift 1
+   ;;
+   -sa | --ssh_address)
+   case $2 in
+      'lmmd'|'LMMD') ssh_address=${addr_lst[0]} && ssh_port='xxx'    ;;
+      'beta')        ssh_address=${addr_lst[1]} && ssh_port='xxx'   ;;
+      'tetralith1')  ssh_address=${addr_lst[2]}    ;;
+      'tetralith2'|'tetralith')     ssh_address=${addr_lst[3]}       ;;
+      [0-9]*.*)      ssh_address=$2                ;;
+      *)             USAGE && exit 1               ;;
+   esac
+   shift 2
+   ;;
+   -rp | --remote_port)
+   remote_port=$2
+   shift 2
+   ;;
+   -lp | --local_port)
+   local_port=$2
+   shift 2
+   ;;
+   -ov | --open_vnc)
+   open_vnc='true'
+   shift 1
+   ;;
+   -h | --help)
+   USAGE
+   exit 0
+   ;;
+   *)
+   USAGE
+   exit 1
+   ;;
+   esac
+done
+
+if [[ -z $open_vnc ]]; then
+   if [[ -z $user ]] || [[ -z $local_port ]] \
+   || [[ -z $remote_port ]] || [[ -z $ssh_address ]]; then
+      printf "%s\n\n" "port forwarding mode, example: $0 -lp NUM -rp NUM -u user -sa lmmd"
+      USAGE
+      exit 1
+   fi
+   err_msg="local port: $local_port is forwarded by ssh, please change another local_port"
+   check=$(CHECK "$local_port" "ssh")
+   [[ $check -ge 1 ]] && echo -e "\n${b_CRER}${err_msg}${CDEF}\n" && USAGE && exit 1
+   [[ -z $no_tty ]] && NL='-L' || NL='-N -L'
+
+   ssh -o ServerAliveInterval=60 -X -p $ssh_port $NL ${local_port}:localhost:${remote_port} ${user}@${ssh_address} 
+      
+else
+   [[ -z $local_port ]] && echo -e "${CWAR}local_port number is needed${CDEF}" && USAGE && exit 1
+   if [[ -z $user ]] || \
+      [[ -z $remote_port ]] || [[ -z $ssh_address ]]; then
+      err_msg="local port: $local_port is opened in vncviewer, please change another local_port"
+      check=$(CHECK "$local_port" "$vncviewer")
+      [[ $check -ge 1 ]] && echo -e "\n${b_CRER}${err_msg}${CDEF}\n" && USAGE && exit 1
+      err_msg="local port: $local_port is not forwarded, please forwarded it first!"
+      check=$(CHECK "$local_port" "ssh" "$err_msg")
+      [[ $check -eq 0 ]] && echo -e "\n${b_CRER}${err_msg}${CDEF}\n" && USAGE && exit 1
+
+      $vncviewer -Shared localhost:${local_port}
+   fi
+fi
+

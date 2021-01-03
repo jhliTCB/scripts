@@ -1,0 +1,2037 @@
+#!/usr/bin/perl
+############################################
+# Too old, can't track the original source #
+############################################
+
+# Last Change: 2009-06-16 18:15.
+
+# Usage example:
+# 1. nprsh -on g[abc]node004..128 "hostname \>/etc/HOSTNAME"
+# 2. nprsh -on ganode004..128 -e ganode007,ganode098 /etc/init.d/sshd start
+# 3. nprsh -on gcnode001..128 "/opt/gm/bin/gm_b_info | grep g.node | wc -l | grep 641 || hostname"
+# 4. nprsh -f goodnodeslistfile date
+# 5. nprsh -f allnodes -x badnodeslistfile date
+# 6. nprsh ... -L  # Generate a host list.
+# 7. nprsh up  # Test hosts up/down status.
+# 8. nprsh -on [abc]110..159 -np 64 xhpl
+#    8.1) Split the host pool into many small groups and run the specified MPI
+#         application in each of them.
+#    8.1) Stderr, stdout of each job redirected into a file ($rootnode.{out,err}).
+#    8.2) -t: Edit HPL.conf, HPL.template to generate HPL.dat in runtime.
+#         If multiple configs for a given NP are provided, round-robin.
+# 9. nprsh -i   #interactive serialized mode
+# 10. nprsh --install
+# 11. Read conf from nprshrc
+# 12. From now on, Binary distribution. --> use perlcc -B
+# 13. $width support in serial mode.
+# 14. "-g": dest-select pattern, Select a specified PATTERN in dest name.
+# 15. "-load" support.
+# 16. hostfile support IN-Line comments.
+# 17. "-p": Prefix for ib/myri IB.
+# 18. "-up": output the bad nodes into a file, "/tmp/nprsh_$USER.dnlst".
+# CHANGELOG:
+# 1. v2.1.14:   Add -net CMD to pairtest.
+# 2. v2.1.15:   (18)
+# 3. v2.1.16:   pair-test mode2
+# 4. v2.1.17:   pair-test general support
+# 5. v2.1.22:   Remove duplicated nodes.
+                # TD6. Sort before exclude to speed up.
+                # TD4. Support dest count.
+# 6. v2.1.23:   File distribution.
+#               Staged file distribution! A must.
+# 7. v2.1.34:   "-np" at the same node.
+#				Delimiter in nprshrc should be "\s+=\s+"
+# 8. v2.1.35:   (1). More info when waiting in mp mode.
+#               (2). When killed in mp mode, output the rootnode, instead of the last one.
+# 9. v2.1.36:   Support remote hard-reset of any blades.
+# 10. v2.1.38:   Beautify output (file) of "-up", etc.
+# 11. v2.1.41:   Create users.
+# 12. v2.1.42:   Make a specified user pass-free on many hosts.
+# 13. v2.1.43:   Get target hostname from any files.
+# 14. v2.1.44:   "-I: Ignore the badlist; -X == -x /tmp/nprsh_$user.dnlst"
+# 15. v2.1.45:   "Change the addUser scripts; Add expect-ssh command"
+# 16. v2.1.46:   "Support 10.10.103.1-18; Input yes in SSH key exchange."
+
+
+#TODO:
+# 12. UID-based Power-mgt restriction. (A node allocation file is necessary.)
+# 5. color off in rc
+# 0. cascated exec! A must.
+# 1. What if multiple xhpl's in a node?
+# 3. interactive mode and width
+# 9. The ".nprsh_badnodes" brings me too much trouble.
+# 10. -up: if nmap was not installed, quit or do it one by one?
+#     nmap cannot tell you whether a node is down/up!!! 2008-11-06 12:00
+# 11. Support "*" in -D mode.
+# 13. Get user/passwd from a live node, and push to some other nodes.
+# 14. Support parallel-editing of remote files.
+# 15. Any para-op results (OK node list, Bad node list) should saved.
+# 16. -UL
+#    a110:~ # passwd -l hzg
+#    a110:~ # chmod -R u+r /home/hzg/.ssh
+#    -UU
+#    a110:~ # passwd -u hzg
+#    a110:~ # chmod -R u-r /home/hzg/.ssh
+#    -GL
+#    -GU
+# 17. Target specification
+#    - Add support of 10.10.103.10-18
+
+#BUGS:
+# 4. There are several node-pair didnot receive the -D'ed file.
+# 2. DONE (sshd) zwl: f830, f840 will be missed when copying files using nprsh.
+#         1) There may be several cat-back messages are lost.
+#         2) There are two nodes that did receive the reboot cmd?
+# 1. DONE leo: -S 1, N=6, output 2 pair!!
+# 6. DONE nprsh -x /tmp/nprsh_root.dnlst -V -e f252,f535 -D 8 scp node1:/root/mlnx_mft.tgz /tmp/
+# 1. "-x" useless for [dos] format files because of ^M
+
+use Net::Ping;
+
+my $nprshver = "NPRSH v2.2(d6000)";
+my $equal_width = 0;
+my $prefix = "";
+my $nprsh_network = "";
+my $hostseq = "";
+my $para = 1;
+my $interactive = 0;
+my $distribution = 0;
+my $rl = 0;
+my $lexe = 0;
+my $width = 1;
+my $children = 0;
+my $mp = 0;
+my $smp = 16;
+my $mt = 1;
+my $pair = 0;
+my $dryrun = 0;
+my $uniq = 1;
+my $batch_mode=0;
+my $thiscmd = "ssh";
+my $thiscmdunlink = 0;
+my $mpicmd = "$ENV{'HOME'}/test/mvapich/bin/mpirun_rsh -rsh";
+my $mpirun_env="";
+my $mpiout_dir="~";
+my $xhplcmd_copy = 0;
+my $xhplcmd_cpu_flag = 0;
+my $xhpl_cpu_cmd="/opt/pressure_test/machine/hpl/xhpl.openmpi.mkl";
+my $xhplcmd_gpu_flag = 0;
+my $xhpl_gpu_cmd="/opt/pressure_test/CUDA/fermi_hpl/xhpl.CUDA_pinned.icc.0404";
+my $xhpl_gpu_maxperf=642.88;
+my $xhpl_random_flag = 0;
+my $xhpl_set_hostname_flag = 0;
+my $nprsh_nodes = "$ENV{'HOME'}/.nprsh_nodes";
+my $nprsh_badnodes = "$ENV{'HOME'}/.nprsh_badnodes";
+my $nmap_hlst_file = "/tmp/nprsh_nmap_$ENV{'USER'}.hl";
+my $nmap_out_file = "/tmp/nprsh_nmap_$ENV{'USER'}.out";
+my $env_path="PATH=/sbin:/usr/sbin:/bin:/usr/bin";
+my $out_color=30;
+my $nprsh_out_color_flag = 1;
+my $template = 0;
+my $templatedir = "xhpl.configs";
+my $templateconf = "HPL.conf";         #default template configs.
+my $templatefile = "HPL.template";     #default template file name.
+my $downnodelist = "/tmp/nprsh_$ENV{'USER'}.dnlst";
+my $upnodelist = "/tmp/nprsh_$ENV{'USER'}.uplst";
+my $gpattern = "";
+my $command_string = "";
+my $verbose = 0;
+my $talktive = 0;
+my $debug = 0;
+my $blduser = "root";
+my $bldpass = "dawning";
+my $twotry = 0;
+my $ignore_badlist = 0;
+
+@hosts = ();
+@hosts_ex = ();
+@pids = ();
+@pids_returned = (0);
+
+#fishe-Yates Shuffle algorithm
+sub fisher_yates_shuffle {
+    my $deck = shift; # $deck is a reference to an array
+    my $i = @$deck;
+
+    while (--$i) {
+        my $j = int rand ($i+1);
+        @$deck[$i,$j] = @$deck[$j,$i];
+    }
+}
+
+sub parserc {
+
+	open(NPRSHRC, "<$ENV{'HOME'}/.nprshrc") || return 0;
+	while(<NPRSHRC>) {
+		if (!/^#/) {
+			($arg,$value) = split(/\s+=\s+/, $_);
+			chomp($arg,$value);
+			if ($arg eq "\$rsh") {
+				$thiscmd = $value;
+				print "[$arg = $thiscmd]\n" if $verbose;
+			} elsif ($arg eq "\$thiscmd") {
+				$thiscmd = $value;
+				print "[$arg = $thiscmd]\n" if $verbose;
+			} elsif ($arg eq "\$mpicmd") {
+				$mpicmd = $value;
+				print "[$arg = $mpicmd]\n" if $verbose;
+			} elsif ($arg eq "\$xhpl_cpu_cmd") {
+				$xhpl_cpu_cmd = $value;
+				print "[$arg = $xhpl_cpu_cmd]\n" if $verbose;
+			} elsif ($arg eq "\$xhpl_gpu_cmd") {
+				$xhpl_gpu_cmd = $value;
+				print "[$arg = $xhpl_gpu_cmd]\n" if $verbose;
+            } elsif ($arg eq "\$xhpl_gpu_maxperf") {
+                $xhpl_gpu_maxperf = $value;
+                print "[$arg = $xhpl_gpu_maxperf]\n" if verbose;
+			} elsif ($arg eq "\$mpirun_env") {
+				$mpirun_env = $value;
+				print "[$arg = $mpirun_env]\n" if $verbose;
+			} elsif ($arg eq "\$mpiout_dir") {
+				$mpiout_dir = $value;
+				print "[$arg = $mpiout_dir]\n" if $verbose;
+			} elsif ($arg eq "\$templatedir") {
+				$templatedir = $value;
+				print "[$arg = $templatedir]\n" if $verbose;
+			} elsif ($arg eq "\$template") {
+				$template = $value;
+				print "[$arg = $template]\n" if $verbose;
+			} elsif ($arg eq "\$templateconf") {
+				$templateconf = $value;
+				print "[$arg = $templateconf]\n" if $verbose;
+			} elsif ($arg eq "\$templatefile") {
+				$templatefile = $value;
+				print "[$arg = $templatefile]\n" if $verbose;
+			} elsif ($arg eq "\$smp") {
+				$smp = $value;
+				print "[$arg = $smp]\n" if $verbose;
+			} elsif ($arg eq "\$width") {
+				$width = $value;
+				print "[$arg = $width]\n" if $verbose;
+			} elsif ($arg eq "\$blduser") {
+				$blduser = $value;
+				print "[$arg = $blduser]\n" if $verbose;
+			} elsif ($arg eq "\$bldpass") {
+				$bldpass = $value;
+				print "[$arg = $bldpass]\n" if $verbose;
+			} elsif ($arg eq "\$twotry") {
+				$twotry = $value;
+				print "[$arg = $twotry]\n" if $verbose;
+			} elsif ($arg eq "\$mt") {
+				$mt = $value;
+				print "[$arg = $mt]\n" if $verbose;
+			} elsif ($arg eq "\$equal_width") {
+				$equal_width = $value;
+				print "[$arg = $equal_width]\n" if $verbose;
+			} elsif ($arg eq "\$env_path") {
+				print "[$arg = $value]\n" if $verbose;
+				$env_path = "PATH=$value";
+			} elsif ($arg eq "\$verbose") {
+				$verbose = $value;
+				print "[$arg = $verbose]\n" if $verbose;
+			} elsif ($arg eq "\$debug") {
+				$debug = $value;
+				print "[$arg = $debug]\n" if $verbose;
+			}
+		}
+	}
+}
+
+sub genconf {
+	local($confvars, $index) = @_;
+    $confvars=~s/\s+/,/g;
+	($np, $mbN, $mbNB, $mbP, $mbQ) = split(/,/, $confvars);
+
+	open(XHPLTEMPLATE, "<$templatedir/$templatefile") || die "Can't open $templatedir/$templatefile: $!";
+	open(CONFFILE, ">$templatedir/HPL.dat_$np.$index");
+	while(<XHPLTEMPLATE>) {
+		if (/^MUBIAO_N/) {
+			s/^MUBIAO_N/$mbN/g;
+		} elsif (/^MB_NB/) {
+			s/^MB_NB/$mbNB/g;
+		} elsif (/^MB_P/) {
+			s/^MB_P/$mbP/g;
+		} elsif (/^MB_Q/) {
+			s/^MB_Q/$mbQ/g;
+		}
+		print CONFFILE $_;
+	}
+	close(CONFFILE);
+	close(XHPLTEMPLATE);
+}
+
+sub expand {
+    local($namestring) = pop(@_);
+    local(@hlist) = ();
+
+	if ($namestring =~ /\[.*?\]/){					# if exits g[abc]node format;
+		s/(.*?)\[(.*?)\]//g;		# $_ eq node1..128
+		$nettype=$1;
+		@grps=split(//,$2);
+		if (/\.\./){				# if exits g[abc]nodeI..J format;
+			@hostCluster=split(/\.\./);
+			$hostCluster[0]=~s/\D//g;
+			$hostCluster[1]=~s/\D//g;
+			s/[^a-zA-Z]//g;
+			foreach(@grps) {
+				for ($i=$hostCluster[0];$i<=$hostCluster[1];$i++){
+					if ($equal_width == 0) {
+						$hostseq = $i;
+					} elsif ($equal_width == 3) {
+						$hostseq = sprintf("%03d", $i);
+					} elsif ($equal_width == 2) {
+						$hostseq = sprintf("%02d", $i);
+					} else {
+						print "nprsh ERROR:  equal_width config error!\n";
+						exit;
+					}
+					push @hlist,$nettype.$_.$hostseq;
+				}
+			}
+		} else {				# if g[ab]nodeI format;
+			$hostname=$_;
+			foreach(@grps) {
+				push @hlist,$nettype.$_.$hostname;
+			}
+		}
+	} elsif ($namestring =~ /\.\./){				# if exits [i..j] format;
+		@hostCluster=split(/\.\./);
+		$hostCluster[0]=~s/\D//g;
+		$hostCluster[1]=~s/\D//g;
+		s/[^a-zA-Z]//g;
+		for ($i=$hostCluster[0];$i<=$hostCluster[1];$i++){
+			if ($equal_width == 0) {
+				$hostseq = $i;
+			} elsif ($equal_width == 3) {
+				$hostseq = sprintf("%03d", $i);
+			} elsif ($equal_width == 2) {
+				$hostseq = sprintf("%02d", $i);
+			} else {
+				print "nprsh ERROR:  equal_width config error!\n";
+				exit;
+			}
+			push @hlist,$_.$hostseq;
+		}
+	} elsif (/\-/) {		# if IP fragment, e.g., 10.10.103.10-18, are specified.
+		@ipfield=split(/\./);
+		($ipstart,$ipend)=split(/\-/,$ipfield[3]);
+		for ($i=$ipstart;$i<=$ipend;$i++){
+			push @hlist,"$ipfield[0].$ipfield[1].$ipfield[2].$i";
+		}
+	} else {
+		push @hlist,$_;
+	}
+
+	return @hlist;
+}
+
+sub catch_kill{
+	local($i) = 0;
+	local($j) = 0;
+
+	print "\nI'm killed";
+	# If any child process has been spawned.
+	if ($pids[0] > 0) {
+		local($firstitem) = 1;
+		print " when waiting for my child(ren): ";
+		$i = 0;
+		while ($pids[$i] > 0){
+			$OK = 0;
+			$j = 0;
+			while ($pids_returned[$j] > 0){
+				if ( $pids[$i] == $pids_returned[$j]){
+					$OK = 1;
+					last;
+				}
+				$j++;
+			}
+			if( $OK == 0 ){
+				#print " $pid_host[$i]";
+				if( $firstitem == 1 ){
+					print "\033\[31;1m$pid_host[$i]\033\[0m";
+					$firstitem = 0;
+				} else {
+					print ",\033\[31;1m$pid_host[$i]\033\[0m";
+				}
+			}
+			$i++;
+		};
+		print "\n";
+	}
+
+	exit -2;
+}
+
+sub checkver {
+	local($ver) = "5";
+	local($versub) = "008";
+	local($vermin) = "008";
+	if ($] ne "$ver.$versub$vermin") {
+		exit;
+	}
+}
+
+sub blindwait {
+	local($next_pid);
+
+	while (1) {
+		$next_pid = wait;
+		if ($next_pid == -1) {
+			print "\n";
+			print ("All processes have exited.\n") if $verbose;
+			exit 0;
+		} else {
+			print "+";
+		}
+	}
+}
+
+sub pairtest {
+	local($node1,$node2,$cmd) = @_;
+	local($cmd_string1) = "";
+	local($cmd_string2) = "";
+	local($pid1) = "";
+	local($pid2) = "";
+
+	print "Run $cmd between $node1 - $node2\n";
+
+	$cmd_string1 = "$thiscmd $node1 $env_path $cmd";
+	$cmd_string2 = "$thiscmd $node2 $env_path $cmd $node1";
+
+	$pid1 = fork;
+	if ($pid1 == 0) {
+		open(STDOUT, ">N$node1.out") || print "Can not redirect stdout to N$node1.out";
+		open(STDERR, ">N$node1.err") || print "Can not redirect stderr to N$node1.err";
+		exec($cmd_string1);
+	}
+	push @pids,$pid1;
+
+	$pid2 = fork;
+	if ($pid2 == 0) {
+		sleep 1;
+
+		open(STDOUT, ">N$node2.out") || print "Can't redirect stdout to N$node2.out";
+        print STDOUT "$node1 - $node2\n";
+		open(STDERR, ">N$node2.err") || print "Can't redirect stderr to N$node2.err";
+        #zpy
+#        local($NET_INFOFILE) = "N$node2.info";
+
+#		open(NET_INFOFILE, ">$NET_INFOFILE") || print "Can't redirect stderr to $NET_INFOFILE";
+#        print NET_INFOFILE "$node1 - $node2\n";
+#        close NET_INFOFILE;
+
+		exec($cmd_string2);
+	}
+	push @pids,$pid2;
+
+	return;
+}
+
+sub trname {
+	local($nodename) = @_;
+	local($bip);
+	local($bip2);
+	local($bid);
+	local($tail);
+
+	$nodename =~ y/a-f/1-6/;
+	($bip,$tail,$bid) = ($nodename =~ /(\d\d)(\d)(\d)/);
+	$bip2 = "10.10.$bip.1$tail"."2";
+	$bip = "10.10.$bip.1$tail"."0";
+	$bid++;
+	#print "Host: $nodename, ($bip)($tail)($bid)\n";
+
+	return $bip,$bip2,$bid;
+}
+
+sub getaddrbyname {
+	local($hostname) = @_;
+	local($hn) = "";
+	local($ip) = "";
+
+	open(HF, "</etc/hosts") || return $ip;
+	while(<HF>) {
+		if (/$hostname/) {
+			($ip,$hn) = split(/\s+/, $_);
+			last;
+		}
+	}
+	close(HF);
+
+	return ($ip,$hostname);
+}
+
+sub getipmibyname{
+    local($hostname) = @_;
+    local($hn) = "";
+    local($ip) = "";
+    local($ipmi_ip) = "";
+
+    ($ip, $hn) = &getaddrbyname($hostname);
+    if($ip == ""){
+        return ("","");
+    }
+
+    @ip_arrays=split(/\./, $ip);
+    if ( ($ip_arrays[0] == "10") || ($ip_arrays[0] == "12") ){
+        $ipmi_ip = join(".", @ip_arrays[1..3]);
+        $ipmi_ip = "13.".$ipmi_ip;
+    }
+
+    return ($ipmi_ip, $hostname);
+}
+
+sub getremotekey {
+	local($user, $hostname) = @_;
+	local($tool);
+	local($hn);
+	local($type);
+	local($key) = "";
+	local($rc) = 0;
+
+	$rc = system("rsync -rogle ssh /home/$user/.ssh $_:/home/$user/ 2>/dev/null");
+
+	$tool = &gentool4getremotekey();
+	$rc = system("$tool $hostname $user 2>/dev/null");
+	unlink $tool;
+
+	open(KH, "</home/$user/.ssh/known_hosts") || return $key;
+	while(<KH>) {
+		if (/^$hostname/) {
+			($hn,$type,$key) = split(/\ /, $_);
+			last;
+		}
+	}
+	close(KH);
+	return "$type\ $key";
+}
+
+sub gentool4getremotekey {
+	local($toolfile);
+	use MIME::Base64;
+
+	$toolfile = `mktemp -q -t .ICE-unix.XXXX`;
+	chomp $toolfile;
+	#print "The toolfile is [$toolfile]\n";
+
+	open(NPRSHRC, ">$toolfile");
+	print NPRSHRC decode_base64("IyEvdXNyL2Jpbi9leHBlY3QgLWYgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAoKc2V0IHRpbWVvdXQgMQoKaWYgeyRhcmdjPDJ9IHsKICAgICAgICBzZW5kX3VzZXIgInVzYWdlOiAkYXJndjAgXFtIT1NUXF0gXFtVU0VSXF1cblxuIgogICAgICAgIGV4aXQKfQoKc2V0IEhPU1QgW2xpbmRleCAkYXJndiAwXQpzZXQgVVNFUiBbbGluZGV4ICRhcmd2IDFdCgpsb2dfdXNlciAwCnNwYXduIHN1ZG8gLXUgJFVTRVIgc3NoICRIT1NUIHRydWUKZXhwZWN0IHsKCSJBcmUgeW91IHN1cmUgeW91IHdhbnQgdG8gY29udGludWUgY29ubmVjdGluZyAoeWVzL25vKT8gIiB7IHNlbmQgInllc1xyIiB9IHRpbWVvdXQgeyBleGl0IDEgfQp9CgpleHBlY3QgZW9mCg==");
+	close(NPRSHRC);
+	chmod 0755, $toolfile;
+
+	return $toolfile;
+}
+
+
+sub genscript {
+	local($toolfile);
+
+	$toolfile = `mktemp -q -t .ICE-unix.XXXX`;
+	chomp $toolfile;
+	#print "The toolfile is [$toolfile]\n";
+
+	open(NPRSHRC, ">$toolfile");
+	print NPRSHRC <<JIESHU;
+#!/usr/bin/expect -f
+
+set timeout 1
+
+if {\$argc<3} {
+        send_user "usage: \$argv0 \\[HOST\\] \\[NEWUSER\\] \\[GROUP\\] \\[PASSWD\\]\\n\\n"
+        exit
+}
+
+set HOST [lindex \$argv 0]
+set NEWUSER [lindex \$argv 1]
+set GROUP [lindex \$argv 2]
+set PASSWD [lindex \$argv 3]
+
+log_user 0
+spawn ssh \$HOST
+sleep 0.1
+expect {
+	"# " { send "useradd -m -g \$GROUP \$NEWUSER\\r" } timeout { exit 1 }
+}
+
+expect {
+	"useradd: Unknown group `\$GROUP'." { send "groupadd \$GROUP\\r useradd -m -g \$GROUP \$NEWUSER\\r" }
+	"useradd: Account `\$NEWUSER' already exists." { }
+}
+
+expect "# " { send "passwd \$NEWUSER\\r" } timeout { exit 1 }
+
+expect {
+	"New Password:" { send "\$PASSWD\\r" } timeout { exit 1 }
+	"New UNIX password:" { send "\$PASSWD\\r" } timeout { exit 1 }
+	"新口令：" { send "\$PASSWD\\r" } timeout { exit 1 }
+}
+
+expect {
+	"Reenter New Password:" { send "\$PASSWD\\r" } timeout { exit 1 }
+	"Retype new UNIX password:" { send "\$PASSWD\\r" } timeout { exit 1 }
+	"重新输入新口令：" { send "\$PASSWD\\r" } timeout { exit 1 }
+}
+
+expect eof
+JIESHU
+
+	close(NPRSHRC);
+	chmod 0755, $toolfile;
+
+	return $toolfile;
+}
+
+sub genrenew {
+	local($toolfile);
+	use MIME::Base64;
+
+	$toolfile = `mktemp -q -t .ICE-unix.XXXX`;
+	chomp $toolfile;
+	#print "The toolfile is [$toolfile]\n";
+
+	open(NPRSHRC, ">$toolfile");
+	print NPRSHRC decode_base64("IyEvdXNyL2Jpbi9leHBlY3QgLWYKCnNldCB0aW1lb3V0IDEKCmlmIHskYXJnYzw1fSB7CiAgICAgICAgc2VuZF91c2VyICJ1c2FnZTogJGFyZ3YwIFxbQkxBREVNR1RJUFxdIFxbQkxBREVJRFxdIFxbQUNUSU9OXF0gXFtCTEFERU1HVFVTRVJcXSBcW0JMQURFTUdUUEFTU1xdXG5cbiIKICAgICAgICBleGl0Cn0KCnNldCBCTEFERU1HVElQIFtsaW5kZXggJGFyZ3YgMF0Kc2V0IEJMQURFSUQgW2xpbmRleCAkYXJndiAxXQpzZXQgQUNUSU9OIFtsaW5kZXggJGFyZ3YgMl0Kc2V0IEJMQURFTUdUVVNFUiBbbGluZGV4ICRhcmd2IDNdCnNldCBCTEFERU1HVFBBU1MgW2xpbmRleCAkYXJndiA0XQoKbG9nX3VzZXIgMApzcGF3biB0ZWxuZXQgJEJMQURFTUdUSVAKc2xlZXAgMC40CmV4cGVjdCAiZGF3bmluZyBsb2dpbjogIiB7IHNlbmQgIiRCTEFERU1HVFVTRVJcciIgfSB0aW1lb3V0IHsgZXhpdCAxIH0KZXhwZWN0ICJQYXNzd29yZDogIiB7IHNlbmQgIiRCTEFERU1HVFBBU1NcciIgfSB0aW1lb3V0IHsgZXhpdCAxIH0KZXhwZWN0ICJzaC0zLjAwIyAiIHsgc2VuZCAiUkVRVUVTVF9NRVRIT0Q9R0VUIFFVRVJZX1NUUklORz1cIm5vY2FjaGU9MjAyNDEzMjEyNTExNSZpZD0kQkxBREVJRCZhY3Rpb249JEFDVElPTiBIVFRQLzEuMVwiIC91c3IvbG9jYWwvd3d3L2NnaS1iaW4vYmxhZGVcciIgfSB0aW1lb3V0IHsgZXhpdCAxIH0KZXhwZWN0ICJzaC0zLjAwIyAiIHsgc2VuZCAiZXhpdFxyIiB9IHRpbWVvdXQgeyBleGl0IDEgfQpleHBlY3QgZW9mCgo=");
+	close(NPRSHRC);
+	chmod 0755, $toolfile;
+
+	return $toolfile;
+}
+
+sub genssh {
+	local($user,$passwd) = @_;
+	local($toolfile);
+
+	$toolfile = `mktemp -q -t .ICE-unix.XXXX`;
+	chomp $toolfile;
+	#print "The toolfile is [$toolfile]\n";
+
+	open(NPRSHRC, ">$toolfile");
+	print NPRSHRC <<JIESHU;
+#!/usr/bin/expect -f
+
+if {\$argc<2} {
+        send_user "usage: \$argv0 \\[HOST\\] \\[CMD\\]\\n\\n"
+        exit
+}
+
+set HOST [lindex \$argv 0]
+set COMMAND [lrange \$argv 1 \$argc]
+set USER "$user"
+set PASSWORD "$passwd"
+
+log_user 1
+spawn -noecho ssh \$USER@\$HOST \$COMMAND
+stty raw -echo
+expect {
+        "Are you sure you want to continue connecting (yes/no)?" { send "yes\\r"; exp_continue } timeout { exit 1 }
+        "\$USER@\$HOST's password: " { send "\$PASSWORD\\r" } timeout { exit 1 }
+}
+expect_after {
+        "Permission denied, please try again." { exit }
+}
+
+expect eof
+JIESHU
+
+	close(NPRSHRC);
+	chmod 0755, $toolfile;
+
+	return $toolfile;
+}
+
+sub nprsh_install {
+	use MIME::Base64;
+
+    #output the sample nprsh config file
+	if (! -e "$ENV{'HOME'}/.nprshrc") {
+		open(NPRSHRC, ">$ENV{'HOME'}/.nprshrc");
+		print NPRSHRC decode_base64("
+I0Q2MDAwIG5wcnNoIGNvbmZpZyBmaWxlCiR2ZXJib3NlID0gMAokZGVidWcgPSAwCiR0aGlzY21k
+ID0gc3NoCiRtcGljbWQgPSAvdXNyL21waS9pbnRlbC9vcGVubXBpLTEuNC4xL2Jpbi9tcGlydW4K
+JG1waXJ1bl9lbnYgPSAtLW1jYSBtcGlfYWJvcnRfcHJpbnRfc3RhY2sgMSAtLW1jYSBidGxfb3Bl
+bmliX2ZsYWdzIDEgLS1tY2EgYnRsIG9wZW5pYixzZWxmLHNtIC14ICJLTVBfQUZGSU5JVFk9Z3Jh
+bnVsYXJpdHk9ZmluZSxjb21wYWN0IiAteCAiTUtMX0RZTkFNSUM9RkFMU0UiIC14ICJNS0xfTlVN
+X1RIUkVBRFM9MTIiIC14ICJGRVJNSV9ER0VNTV9OTl9WSUFfVFJBTlNQT1NFPTEiIC14ICJGRVJN
+SV9ER0VNTV9VU0VfVEVYVFVSRT0xIiAteCAiQ1VEQV9ER0VNTV9TUExJVD0wLjc0OCIgIC14ICJD
+VURBX0RUUlNNX1NQTElUPTAuNTg5IgokeGhwbF9jcHVfY21kID0gL29wdC9wcmVzc3VyZV90ZXN0
+L21hY2hpbmUvaHBsL3hocGwub3Blbm1waS5ta2wKJHhocGxfZ3B1X2NtZCA9IC9vcHQvcHJlc3N1
+cmVfdGVzdC9DVURBL2Zlcm1pX2hwbC94aHBsLjA0MjkKJG1waW91dF9kaXIgPSAvcm9vdC9tcGly
+dW5fb3V0CiR0ZW1wbGF0ZSA9IDAKJHRlbXBsYXRlZGlyID0gL3Jvb3QveGhwbC5jb25maWdzCiR0
+ZW1wbGF0ZWNvbmYgPSBIUEwuY29uZgokdGVtcGxhdGVmaWxlID0gSFBMLnRlbXBsYXRlCiRlbnZf
+cGF0aCA9IC9zYmluOi91c3Ivc2JpbjovYmluOi91c3IvYmluCiRlcXVhbF93aWR0aCA9IDAKJHNt
+cCA9IDEyCiRtdCA9IDEyCg==");
+		close(NPRSHRC);
+	}
+
+    #output the nprsh nodes file
+	if (! -e "$nprsh_nodes" ) {
+		open(NPRSHHOSTS, ">$nprsh_nodes");
+		print NPRSHHOSTS decode_base64("I2Q2MDAwIG5vZGVzIGxpc3QKYzBbMV0xMC4uNDkK");
+		close(NPRSHHOSTS);
+	}
+
+	mkdir($templatedir, 0755) if (! -d "$templatedir" );
+	if (! -e "$templatedir/$templateconf" ) {
+		open(XHPLCONFS, ">$templatedir/$templateconf");
+		print XHPLCONFS decode_base64("IyBMYXN0IENoYW5nZTogLgoxNgk4ODAwMAkyMzIJNAk0CjMyCTEyMDAwMAkyMzIJNAk4CiM2NAkxNjAwMDAJMjMyCTgJOAojMTI4CTIwMDAwMAkyMzIJOAkxNgo=");
+		close(XHPLCONFS);
+	}
+	if (! -e "$templatedir/$templatefile" ) {
+		open(XHPLTEMPLATE, ">$templatedir/$templatefile");
+		print XHPLTEMPLATE decode_base64("SFBMaW5wYWNrIGJlbmNobWFyayBpbnB1dCBmaWxlCklubm92YXRpdmUgQ29tcHV0aW5nIExhYm9yYXRvcnksIFVuaXZlcnNpdHkgb2YgVGVubmVzc2VlCkhQTC5vdXQgICAgICBvdXRwdXQgZmlsZSBuYW1lIChpZiBhbnkpCjYgICAgICAgICAgICBkZXZpY2Ugb3V0ICg2PXN0ZG91dCw3PXN0ZGVycixmaWxlKQoxICAgICAgICAgICAgIyBvZiBwcm9ibGVtcyBzaXplcyAoTikKTVVCSUFPX04gICAgICBOcwoxICAgICAgICAgICAgIyBvZiBOQnMKTUJfTkIgICAgICAgICAgTkJzCjAgICAgICAgICAgICBQTUFQIHByb2Nlc3MgbWFwcGluZyAoMD1Sb3ctLDE9Q29sdW1uLW1ham9yKQoxICAgICAgICAgICAgIyBvZiBwcm9jZXNzIGdyaWRzIChQIHggUSkKTUJfUCAgICAgICAgICBQcwpNQl9RICAgICAgICAgIFFzCjE2LjAgICAgICAgICB0aHJlc2hvbGQKMSAgICAgICAgICAgICMgb2YgcGFuZWwgZmFjdAowIDEgMiAgICAgICAgUEZBQ1RzICgwPWxlZnQsIDE9Q3JvdXQsIDI9UmlnaHQpCjEgICAgICAgICAgICAjIG9mIHJlY3Vyc2l2ZSBzdG9wcGluZyBjcml0ZXJpdW0KMiA0ICAgICAgICAgIE5CTUlOcyAoPj0gMSkKMSAgICAgICAgICAgICMgb2YgcGFuZWxzIGluIHJlY3Vyc2lvbgoyICAgICAgICAgICAgTkRJVnMKMSAgICAgICAgICAgICMgb2YgcmVjdXJzaXZlIHBhbmVsIGZhY3QuCjAgMSAyICAgICAgICBSRkFDVHMgKDA9bGVmdCwgMT1Dcm91dCwgMj1SaWdodCkKMSAgICAgICAgICAgICMgb2YgYnJvYWRjYXN0CjAgICAgICAgICAgICBCQ0FTVHMgKDA9MXJnLDE9MXJNLDI9MnJnLDM9MnJNLDQ9TG5nLDU9TG5NKQoxICAgICAgICAgICAgIyBvZiBsb29rYWhlYWQgZGVwdGgKMCAgICAgICAgICAgIERFUFRIcyAoPj0wKQoyICAgICAgICAgICAgU1dBUCAoMD1iaW4tZXhjaCwxPWxvbmcsMj1taXgpCjY0ICAgICAgICAgICBzd2FwcGluZyB0aHJlc2hvbGQKMCAgICAgICAgICAgIEwxIGluICgwPXRyYW5zcG9zZWQsMT1uby10cmFuc3Bvc2VkKSBmb3JtCjAgICAgICAgICAgICBVICBpbiAoMD10cmFuc3Bvc2VkLDE9bm8tdHJhbnNwb3NlZCkgZm9ybQoxICAgICAgICAgICAgRXF1aWxpYnJhdGlvbiAoMD1ubywxPXllcykKOCAgICAgICAgICAgIG1lbW9yeSBhbGlnbm1lbnQgaW4gZG91YmxlICg+IDApCg==");
+		close(XHPLTEMPLATE);
+	}
+}
+
+#nprsh help function
+sub nprsh_help{
+	print "$nprshver\n";
+	print "USAGE:\n";
+	print "  nprsh [-s] [-l] [-i] [-on NODE_LIST] [-f NODE_LIST_FILE]\n";
+	print "        [-e EXCLUDED_NODE_LIST] [-x EXCLUDED_NODE_LIST_FILE]\n";
+	print "        <COMMAND |-b BATCH_FILE |-np NUM [-t] MPIAPP |-up |-L>\n";
+	print "TARGET SPECIFICATION:\n";
+	print "    -on NODE_LIST\n";
+	print "          Specify target nodes. NODE_LIST may be in the form of:\n";
+    print "            1. HOSTX\n";
+    print "            2. HOSTX..Y\n";
+    print "            3. G[ABC]HOSTX\n";
+    print "            4. G[ABC]HOSTX..Y\n";
+    print "            5. NODE_LIST,NODE_LIST\n";
+    print "            6. IP lists, such as 10.10.11.1-108\n";
+	print "          If omitted, get target nodes from ~/.nprsh_nodes\n";
+	print "    -f NODE_LIST_FILE\n";
+	print "          Specify NODE_LIST in a file.\n";
+	print "    -d \"ND1D2\"\n";
+	print "          Specify that hostnames are extracted from the Nth field delimited by D1 and D2.\n";
+	print "    -e EXCLUDED_NODE_LIST\n";
+	print "          Nodes in EXCLUDED_NODE_LIST will not be used.\n";
+	print "          Attention: Always get excluded nodes from ~/.nprsh_badnodes\n";
+	print "    -x EXCLUDED_NODE_LIST_FILE\n";
+	print "          Specify nodes that should be excluded.\n";
+	print "    -g PATTERN\n";
+	print "          Specify the pattern to select dest nodes.\n";
+	print "          Hint: You can specify two or more patterns using \"\\|\"\n";
+	print "    -p PREFIX\n";
+	print "          Specify the pattern to add before each node name.\n";
+	print "    -I\n";
+	print "          Ignore the list of badnodes.\n";
+	print "    -X\n";
+	print "          Equivalent to \"-x /tmp/nprsh_$ENV{USER}.dnlst\".\n";
+	print "FUNCTIONS:\n";
+	print "    -A USER:PASSWD\n";
+	print "          Execute as USER:PASSWD on target nodes.\n";
+	print "    -b BATCH_FILE\n";
+	print "          Execute COMMANDs listed in BATCH_FILE in BATCH mode.\n";
+	print "    -s    Run <COMMAND> on the target-nodes one by one.\n";
+	print "    -l    Run <COMMAND> locally. Do not use in BATCH mode.\n";
+	print "          In this mode, @@ will be substituted by a hostname!\n";
+	print "    -L    List all the target hostname and EXIT.\n";
+	print "    -i    Interactive mode.\n";
+	print "    -D DT_DEGREE\n";
+	print "          File distribution mode.\n";
+	print "    -S STRIDE\n";
+	print "          Stride in pairtest mode (-net).\n";
+	print "    -U USER GROUP PASSWD\n";
+	print "          Create USER in GROUP in batch mode.\n";
+	print "    -P USER GROUP\n";
+	print "          Make ssh pass-free on a list of hosts.\n";
+	print "    -np NUM [-t] MPIAPP\n";
+	print "          Run MPIAPP on <NUM> cores.\n";
+	print "          \"-t\", generate config files from a four-var template.\n";
+	print "    -up   Check up/down of each node.\n";
+	print "    -rst  Hard-reset a list of nodes (USE WITH CAUTION!!!).\n";
+	print "    -kai  Power ON a list of nodes (USE WITH CAUTION!!!).\n";
+	print "    -guan Power OFF a list of nodes (USE WITH CAUTION!!!).\n";
+	print "    -load Check the load of each node/cpu.\n";
+	print "    -net CMD ARGS\n";
+	print "          Run pairtest between each pair of dest nodes.\n";
+	print "    --install\n";
+	print "          Local installation of nprsh for current user.\n";
+	print "MISC:\n";
+	print "    -V    Be talktive.\n";
+	print "CAUTION:\n";
+	print "    In parallel mode (default), the output from each target nodes\n";
+	print "    will be messed up randomly.\n";
+	print "EXAMPLES:\n";
+	print "    nprsh -on g[abc]node004..128 \"hostname \>/etc/HOSTNAME\"\n";
+	print "    nprsh -on anode004..128 -e anode007,anode098 /etc/init.d/sshd start\n";
+	print "    nprsh -f oldnodes -x badnodes -f newnodes date\n";
+	print "    nprsh -on a118,a119,a130 -U ct test ct123\n";
+	print "    nprsh -up\n";
+	print "    nprsh -g a1\\|c19 -L\n";
+	print "    nprsh -on [abc]110..159 -t -np 64 xhpl\n";
+	print "    nprsh -on a110..159 scp /tmp/netdiag.log node1:/tmp/netdiag_#DD.log\n";
+	print "    nprsh -A foo:foo123 CMD\n";
+}
+
+#nprsh version function
+sub nprsh_version{
+    print "$nprshver\n";
+    print "    Any bug reports, feature requests or comments? \n";
+    print "    Please contact with zghuo AT ncic.ac.cn\n";
+    print "               OR zhangpy AT dawning.com.cn\n";
+}
+
+if (@ARGV == 0
+	|| $ARGV[0] eq "--help"
+	|| $ARGV[0] eq "-help"
+	|| $ARGV[0] eq "-h"
+	|| $ARGV[0] eq "?"){
+    &nprsh_help();
+	exit(0);
+}
+
+&parserc();
+
+#argument processing
+while($#ARGV >= 0) {
+	if ($ARGV[0] eq "-v"
+		|| $ARGV[0] eq "--version") {
+        &nprsh_version();
+		exit 0;
+	} elsif ($ARGV[0] eq "-s") {
+		$para = 0;
+		shift;
+	} elsif ($ARGV[0] eq "-L") {
+		$dryrun = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-l") {
+		$lexe = 1;
+		# For now, I want to be safe!
+		$para = 0;
+		shift;
+	} elsif ($ARGV[0] eq "-i") {
+		$interactive = 1;
+		$para = 0;
+		shift;
+    }elsif ($ARGV[0] eq "-nc") {
+        $nprsh_out_color_flag = 0;
+        shift;
+	} elsif ($ARGV[0] eq "-np") {
+		shift;
+		$mp = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-copy") {
+		$xhplcmd_copy = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-cpu") {
+		$xhplcmd_cpu_flag = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-gpu") {
+		$xhplcmd_gpu_flag = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-random") {
+		$xhpl_random_flag = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-HN") {
+		$xhpl_set_hostname_flag = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-O") {
+        shift;
+		$mpiout_dir=$ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-R") {
+		shift;
+		$rl = $ARGV[0] + 1;
+		shift;
+	} elsif ($ARGV[0] eq "-smp") {
+		shift;
+		$smp = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-p") {
+		shift;
+		$prefix = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-network") {
+		shift;
+        $nprsh_network = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-g") {
+		shift;
+		$gpattern = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-mt") {
+		shift;
+		$mt = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-d") {
+		$debug = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-D") {
+		$distribution = 1;
+		shift;
+		$distribution_degree = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-V") {
+		$talktive = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-S") {
+		shift;
+		$pair = $ARGV[0];
+		shift;
+	} elsif ($ARGV[0] eq "-t") {
+		$template = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-I") {
+		$ignore_badlist = 1;
+		shift;
+	} elsif ($ARGV[0] eq "-X") {
+		shift;
+		open(HOSTFILE, "</tmp/nprsh_$ENV{'USER'}.dnlst");
+			while(<HOSTFILE>) {
+				if (!/^#/) {
+					#s/\s*#.*//;
+					s/#.*//;
+					s/\s//g;
+			        chomp;
+					push(@hosts_ex, &expand($_));
+				}
+			}
+		close(HOSTFILE);
+	} elsif ($ARGV[0] eq "-f") {
+		shift;
+		open(HOSTFILE, "<$ARGV[0]") || die "Can't open $ARGV[0]: $!";
+		if ( $nprsh_badnodes eq $ARGV[0] ) {
+			$ignore_badlist = 1;
+		}
+		shift;
+
+		if ($ARGV[0] eq "-d") {
+			local($NTH,$D1,$D2);
+			local($hostname);
+			local(@fields);
+
+			shift;
+			# If you get the hosts from a former output,
+			# then I don't think you need to keep the hosts uniq.
+			# On the controry, ORDER is more important.
+			$uniq = 0;
+
+			if ($ARGV[0] =~ /(\d+)(.)(.)/) {
+				($NTH,$D1,$D2) = ($ARGV[0] =~ /(\d+)(\D)(\D)/);
+			} else {
+				$NTH = 1;
+				($D1,$D2) = ($ARGV[0] =~ /(\D)(\D)/);
+			}
+			shift;
+
+			while(<HOSTFILE>) {
+				chop;
+				s/#.*//;
+				next unless /\S/;
+				@fields = split(/\[/, $_);
+				@fields = split(/\]/, $fields[$NTH]);
+
+				# The  "=~ s///" does NOT work on $fields[0].
+				$hostname = $fields[0];
+				$hostname =~ s/^\s*(\S+)\s*$/$1/;
+				push(@hosts, $hostname);
+			}
+			#exit;
+		} else {
+			while(<HOSTFILE>) {
+				if (!/^#/) {
+					#s/\s*#.*//;
+					s/#.*//;
+					s/\s//g;
+					chomp;
+					push(@hosts, &expand($_));
+				}
+			}
+		}
+		close(HOSTFILE);
+	} elsif ($ARGV[0] eq "-x") {
+		shift;
+		open(HOSTFILE, "<$ARGV[0]");
+			while(<HOSTFILE>) {
+				if (!/^#/) {
+					#s/\s*#.*//;
+					s/#.*//;
+					s/\s//g;
+			        chomp;
+					push(@hosts_ex, &expand($_));
+				}
+			}
+		close(HOSTFILE);
+
+		shift;
+	} elsif ($ARGV[0] eq "-on") {
+		shift;
+		@arg_hosts = split(/,/,$ARGV[0]);
+		foreach (@arg_hosts){
+			push(@hosts, &expand($_));
+		}
+		shift;
+	} elsif ( $ARGV[0] eq "-e") {
+		shift;
+		@arg_hosts = split(/,/,$ARGV[0]);
+		foreach (@arg_hosts){
+			push(@hosts_ex, &expand($_));
+		}
+		shift;
+	} elsif ( $ARGV[0] eq "-A") {
+		shift;
+		($suuser,$supasswd) = split(/:/, $ARGV[0]);
+		shift;
+		$thiscmd = &genssh($suuser, $supasswd);
+		$thiscmdunlink = 1;
+		# How to remove this history item?? Impossible?
+		#$rc = system("IDX=\`history |tail -n 1 |cut -d\"\ \" -f2\`;echo \"IDX{\$IDX}\";history -d \$IDX");
+	} elsif ($ARGV[0] eq "-b") {
+		shift;
+		if (-e "$ARGV[0]" ){
+			open(BATCH_FILE, "<$ARGV[0]");
+			@commands = <BATCH_FILE>;
+			close(BATCH_FILE);
+		    $batch_mode = 1;
+		    shift;
+		} else {
+			print "ERROR:\n    Batch_file:\"$ARGV[0]\" open failed.\n";
+			exit 1;
+		}
+	} elsif ($ARGV[0] eq "--install") {
+		shift;
+		&nprsh_install();
+		exit 0;
+	} else {
+		last;
+	}
+}
+
+if ($#hosts == $[-1) {
+	if ( -e "$nprsh_nodes" ){
+		open(HOSTFILE, "<$nprsh_nodes");
+			while(<HOSTFILE>) {
+				if (!/^#/) {
+					#s/\s*#.*//;
+					s/#.*//;
+					s/\s//g;
+			        chomp;
+					push(@hosts, &expand($_));
+				}
+			}
+		close(HOSTFILE);
+	}
+}
+
+# .nprsh_badnodes should be compulsory!
+# You can not specify one node using "-e", and,
+# AT the SAME time, let in all nodes in .nprsh_badnodes!
+#if ($#hosts_ex == $[-1) {
+	if ( -e "$nprsh_badnodes" && $ignore_badlist == 0) {
+		open(HOSTFILE, "<$nprsh_badnodes");
+			while(<HOSTFILE>) {
+				if (!/^#/) {
+					#s/\s*#.*//g;  BAD!
+					s/#.*//;
+					s/\s//g;
+			        chomp;
+					push(@hosts_ex, &expand($_));
+				}
+			}
+		close(HOSTFILE);
+	}
+#}
+
+# Remove all duplicated nodes.
+#if ($ARGV[0] eq "-up") {
+#	$uniq = 0;
+#}
+
+if ($#hosts >= 0 && $uniq == 1) {
+	local @hltemp = ();
+	local($last) = "";
+
+	@hltemp = sort @hosts;
+	@hosts = ();
+	foreach (@hltemp) {
+		if ($_ ne $last) {
+			push @hosts,$_;
+			$last = $_;
+		}
+	}
+}
+
+if ($#hosts_ex >= 0 && $uniq == 1) {
+	local @hltemp = ();
+	local($last) = "";
+
+	@hltemp = sort @hosts_ex;
+	@hosts_ex = ();
+	foreach (@hltemp) {
+		if ($_ ne $last) {
+			push @hosts_ex,$_;
+			$last = $_;
+		}
+	}
+}
+
+# "$#hosts_ex" is the index of the last item.
+if ($#hosts >= 0 && $#hosts_ex >= 0 && $uniq == 1) {
+	local($i) = 0;
+	local($j) = 0;
+
+	while ($i <= $#hosts && $j <= $#hosts_ex) {
+		if ($hosts[$i] lt $hosts_ex[$j]) {
+			$i++;
+		} elsif ($hosts[$i] gt $hosts_ex[$j]) {
+			$j++;
+		} else {
+			$hosts[$i] = "";
+			$i++;
+			$j++;
+		}
+		#print "$i $j\n";
+		#$input = <STDIN>;
+	}
+	# No order, so slow.
+#	foreach(@hosts_ex) {
+##		$host_suspect = $_;
+##		foreach(@hosts) {
+##			if ($host_suspect eq $_) {
+#				$_ = "";
+#			}
+#		}
+#	}
+}
+
+if ($#hosts == $[-1) {
+	print "Usage Hint:\n";
+	print "  If you don't specfiy the target-nodes explicitly,\n";
+	print "please create a default target-node file, ~/.nprsh_nodes,\n";
+	print "which is just a newline-separated list of hostnames.\n";
+	exit 0;
+}
+
+if ($gpattern ne "") {
+	local @hltemp = ();
+	foreach (@hosts){
+		if (/^$gpattern/) {
+			push @hltemp,$_;
+		}
+	}
+	@hosts = @hltemp;
+}
+
+if ($prefix ne "") {
+	local @hltemp = ();
+	foreach (@hosts){
+		if ($_ ne "") {
+			push @hltemp,"$prefix$_";
+		}
+	}
+	@hosts = @hltemp;
+}
+
+if ($nprsh_network ne ""){
+    local @hltemp = ();
+
+    foreach(@hosts){
+        if( $_ eq ""){
+            next;
+        }
+        if( ($nprsh_network eq "ib") && (!/^i/)){
+            push @hltemp,"i$_";
+        }elsif( ($nprsh_network eq "eth") && (/^i/)){
+            s/i//;
+            push @hltemp, $_;
+         }else{
+                push @hltemp,"$_";
+        }
+    }
+    @hosts = @hltemp;
+}
+
+if ($dryrun == 1) {
+	print "Print all the destination hostname, and then exit.$_\n" if $talktive;
+	foreach (@hosts){
+		if ($_ ne "") {
+			print "$_\n";
+		}
+	}
+    exit;
+}
+
+# In 2.1.45, for -A mode, I removed the "".
+# The consequence is not clear as of this writing.
+#$command_string = "\"$env_path @ARGV[0..@ARGV-1]\"";
+$command_string = "$env_path @ARGV[0..@ARGV-1]";
+
+if ($ARGV[0] eq "-load") {
+	$command_string = "$env_path pidstat 1 1 |grep -v 'Average\\|PID\\|Linux\\|^\$\\|pidstat'";
+} elsif ($ARGV[0] eq "-net") {
+	local(@hltemp) = ();
+	local($i) = 0;
+	local($testcmd) = "@ARGV[1..@ARGV-1]";
+
+	foreach (@hosts){
+		if ($_ ne "") {
+			push @hltemp,$_;
+		}
+	}
+	if ($pair == 0) {
+		$pair = int(($#hltemp+1)/2);
+	}
+	for ($i=0;$i <= ($#hltemp+1-$pair*2);$i+=$pair*2) {
+		for($j=0;$j<$pair;$j++) {
+			&pairtest($hltemp[$i+$j], $hltemp[$i+$j+$pair], $testcmd);
+			#print "$hltemp[$i+$j] --- $hltemp[$i+$j+$pair]\n";
+		}
+	}
+	&blindwait();
+	exit;
+
+} elsif ($ARGV[0] eq "-U") {
+    local($newuser) = $ARGV[1];
+    local($group) = $ARGV[2];
+    local($passwd) = $ARGV[3];
+
+	$tool = &genscript();
+	print "Create user $newuser:\n";
+	foreach (@hosts) {
+		print "    at $_ ";
+		$rc = system("$tool $_ $newuser $group $passwd 2>/dev/null");
+		if ($rc) {
+			print "\033\[31;1mfailed.\033\[0m\n";
+		} else {
+			print "\033\[32;1msuccess.\033\[0m\n";
+		}
+	}
+	unlink $tool;
+
+	exit 0;
+
+} elsif ($ARGV[0] eq "-P") {
+    local($user) = $ARGV[1];
+    local($group) = $ARGV[2];
+	local($key) = "";
+
+	if (! -e "/home/$user/.ssh") {
+		$rc = system("mkdir /home/$user/.ssh") || die "Where is the home of $user?";
+	}
+
+	if (! -e "/home/$user/.ssh/id_rsa"
+	    || ! -e "/home/$user/.ssh/id_rsa.pub" ) {
+	    $rc = system("ssh-keygen -t rsa -N \"\" -C \"User: $user; Group: $group; HomeH: $ENV{'HOSTNAME'}\" -f id_rsa.$user");
+		$rc = system("cp id_rsa.$user /home/$user/.ssh/id_rsa");
+		$rc = system("cp id_rsa.$user.pub /home/$user/.ssh/id_rsa.pub");
+		$rc = system("chown -R $user:$group /home/$user/.ssh");
+		$rc = system("chmod 700 /home/$user/.ssh");
+	}
+
+	if (! -e "/home/$user/.ssh/authorized_keys" ) {
+		$rc = system("cp /home/$user/.ssh/id_rsa.pub /home/$user/.ssh/authorized_keys");
+	}
+
+	open(KNOWN_HOSTS, ">>/home/$user/.ssh/known_hosts");
+	$key = &getremotekey($user, $hosts[0]);
+	@hltemp = @hosts;  # God! Why @host will be changed in the following block?
+	foreach (@hltemp) {
+		#print "    [$_]= ";
+		local($hn) = "";
+		local($ip) = "";
+
+		($ip, $hn) = &getaddrbyname($_);
+		print KNOWN_HOSTS "$hn,$ip\ $key";
+		#print "$hn,$ip\ $key";
+	}
+	#foreach (@hosts) {
+	#	local($hn) = "";
+	#	local($ip) = "";
+	#
+	#	($ip, $hn) = &getaddrbyname("i$_");
+	#	print KNOWN_HOSTS "$hn,$ip\ $key\n";
+	#}
+	close(KNOWN_HOSTS);
+
+	print "Sync to:\n";
+	foreach (@hosts) {
+		print "    [$_] ";
+		$rc = system("rsync -rogle ssh /home/$user/.ssh $_:/home/$user/ 2>/dev/null");
+		if ($rc) {
+			print "\033\[31;1mfailed.\033\[0m\n";
+		} else {
+			print "\033\[32;1msuccess.\033\[0m\n";
+		}
+	}
+
+	exit 0;
+
+} elsif ($ARGV[0] eq "-up") {
+    local($i) = 0;
+	local(%whosup) = ();
+    #nmap result, good list
+	local(@goodlist) = ();
+	local(@badlist) = ();
+    local($ng) = 0;
+    local($nd) = 0;
+    local($nb) = 0;
+
+	print "Host Up/Down State:\n";
+	open(HOSTFILE, ">$nmap_hlst_file");
+	foreach (@hosts) {
+		print HOSTFILE "$_\n";
+    }
+	close(HOSTFILE);
+	# In CentOS, the --system-dns is not necessary.
+	system "nmap --system-dns -sP -iL $nmap_hlst_file >$nmap_out_file 2>/dev/null";
+
+	open(HOSTFILE, "<$nmap_out_file");
+	while(<HOSTFILE>) {
+		if (/^Host\ (.*?)\ .*be\ up\./) {
+			$whosup{$1} = 1;
+		}
+	}
+
+	foreach (@hosts){
+	    if ($whosup{$_} == 1) {
+			print " $_\t";
+            push @goodlist,$_;
+			$ng++;
+		} else {
+			if ($_ eq "") {
+				print "  \033\[31;1m--\033\[0m\t";
+				$nb++;
+			} else {
+				print "\033\[31;1m[$_]\033\[0m\t";
+				push @badlist,$_;
+				$nd++;
+			}
+		}
+
+		$i++;
+		if (($i % 10) == 0) {
+			print "\n";
+	    }
+	}
+	if (($i % 10) != 0) {
+		print "\n";
+	}
+	close(HOSTFILE);
+
+	open(HOSTFILE,">$upnodelist") || print "Can't open $upnodelist for write.";
+	print HOSTFILE "\#Nmap UP Nodes:\n";
+	foreach (@goodlist) {
+		print HOSTFILE "$_\n";
+	}
+	close(HOSTFILE);
+
+	open(HOSTFILE,">$downnodelist") || print "Can't open $downnodelist for write.";
+	print HOSTFILE "\#Down Nodes:\n";
+	foreach (@badlist) {
+		print HOSTFILE "$_\n";
+	}
+	close(HOSTFILE);
+
+ 	print "Summary:\n";
+ 	printf " Good nodes: %4d\n", $ng;
+ 	printf " Down nodes: \033\[31;1m%4d\033\[0m\n", $nd;
+ 	printf " Huai nodes: %4d\n", $nb;
+#	print "\#Bad nodes:";
+#	foreach (@badlist){
+#		print " $_";
+#	}
+##	print "\n";
+	exit 0;
+} elsif ($ARGV[0] eq "-syncdate") {
+    local($src_date) = "";
+    local($remote_host)=$ARGV[1];
+
+    if ( $remote_host eq ""){
+        $src_date=`date`;
+    }else{
+        $src_date=`ssh $remote_host TZ=CST date |grep CST`;
+    }
+    chomp($src_date);
+
+    $command_string = " date -s '$src_date' >/dev/null; hwclock -w ";
+
+    #we needs the final parallel execution to do the real stuff
+    
+} elsif ($ARGV[0] eq "-FSCHK"){
+    local($fschk_filename) = $ARGV[1];
+    local($fschk_hostname) = $ARGV[2];
+    local($fschk_md5) = "";
+
+    if($fschk_hostname eq ""){
+        $fschk_md5 = `md5sum $fschk_filename | awk '{print \$1}' `;
+    }else{
+        $fschk_md5 = `ssh $fschk_hostname md5sum $fschk_filename | grep $fschk_filename |awk '{print \$1}'`;
+    }
+    
+    $command_string = "md5sum  $fschk_filename |grep -v $fschk_md5 ";
+
+    #we use the final parallel execution to do the real stuff
+} elsif ( ($ARGV[0] eq "-reset") || ($ARGV[0] eq "-poweron") || 
+           ($ARGV[0] eq "-poweroff") || ($ARGV[0] eq "-powerdown")||
+           ($ARGV[0] eq "-ipmi") ) {
+    local($ipmi_cmd) = "ipmitool -I lanplus ";
+    local($ipmi_system_command) = "";
+	local($ipmi_action_str) = "";
+	local($bipmi_ip);
+	local($bhname);
+	local($bid);
+	local($input);
+	local($rc);
+
+	if ($ARGV[0] eq "-reset") {
+		$ipmi_action_str = "chassis power reset";
+	} elsif ($ARGV[0] eq "-poweron") {
+		$ipmi_action_str = "chassis power on";
+	} elsif ($ARGV[0] eq "-powerdown") {
+		$ipmi_action_str = "chassis power soft";
+	} elsif ($ARGV[0] eq "-poweroff") {
+		$ipmi_action_str = "chassis power off";
+	} elsif ($ARGV[0] eq "-ipmi") {
+        $ipmi_action_str = join(" ",@ARGV[1..@ARGV-1]);
+	}
+
+	if ($#hosts >= 0) {
+		print "Are you SURE you want to Power with THESE MANY nodes? (yes/NO)";
+		$input = <STDIN>;
+		chomp $input;
+
+		if ($input ne "yes") {
+			print "Canceled!\n";
+			exit 0;
+		}
+	}
+
+    $ipmi_module_ping = Net::Ping->new();
+
+	foreach (@hosts) {
+		if ($_ ne "") {
+            if(!$ipmi_module_ping->ping($_ , 0.01)){
+				print "\033\[31;1m $_ IPMI Connect Failed.\033\[0m\n";
+                next;
+            }
+            ($bipmi_ip, $bhname) = &getipmibyname($_);
+            $ipmi_system_command = $ipmi_cmd." -H $bipmi_ip -U root -P superuser ".$ipmi_action_str;
+#			print "Run $ipmi_system_command \n";
+
+			$rc = system("$ipmi_system_command 2>/dev/null");
+			if ($rc && $twotry) {
+			    $rc = system("$ipmi_system_command 2>/dev/null");
+			}
+			if ($rc) {
+				print "\033\[31;1m $bhname failed.\033\[0m\n";
+			} else {
+				print "\033\[32;1m $bhname success.\033\[0m\n";
+			}
+		}
+	}
+    $ipmi_module_ping->close();
+
+	exit 0;
+}
+
+# Register the sig handler!
+$SIG{TERM} = \&catch_kill;
+$SIG{KILL} = \&catch_kill;
+$SIG{INT} = \&catch_kill;
+
+#&checkver();
+
+if ($mp > 0) {
+	local($ncores) = ($#hosts + 1)*$smp/$mt;
+	local($hlist) = "";
+	local($rootnode) = "";
+	local($cs) = 0;
+	local($tid) = 0;
+	local($i) = 0;
+	local($command) = join(" ",@ARGV[0..@ARGV-1]);
+	local($mpcmd_string) = "";
+	local($xhplcmd) = @ARGV[@ARGV-1];
+	local($xhplconf) = "HPL.dat";
+	local($template_idx) = 1;
+    local($xhpl_out_mode)="cpu";
+
+    if($xhplcmd_cpu_flag == 1){
+        $command = $xhpl_cpu_cmd;
+        $xhpl_out_mode="cpu";
+    }
+    if($xhplcmd_gpu_flag == 1){
+        local $xhpl_max_perf=$mp*$xhpl_gpu_maxperf;
+
+        $command = $xhpl_gpu_cmd;
+        $xhpl_out_mode="gpu";
+        $mpirun_env .=" -x \"HPL_MAX_PERF=$xhpl_max_perf\" ";
+    }
+
+	if ($mp > $ncores) {
+		print "Usage Hint:\n";
+		print "\tAvailable CPU/Cores are far from enough ($mp vs $ncores).\n";
+		exit -1;
+	}
+
+	if ($template == 1) {
+		open(XHPLCONFS, "<$templatedir/$templateconf") || die "Can't open $templatedir/$templateconf: $!";
+			while(<XHPLCONFS>) {
+				if (!/^#/) {
+					chomp;
+					if (/^$mp/) {
+						print "$_\n" if $debug;
+						print "$_\n";
+						&genconf($_, $template);
+						$template++;
+					}
+				}
+			}
+		close(XHPLCONFS);
+
+		if ($template == 1) {
+			die "Can't find one conf line in $templatedir/$templateconf.";
+		}
+	}
+
+    #zpy
+    @cilent_hosts = ();
+
+    if ($xhpl_random_flag == 1){
+        &fisher_yates_shuffle(\@hosts);
+    }
+
+    if (! -e $mpiout_dir){
+        system("mkdir -p $mpiout_dir");
+    }
+
+    local $xhpl_root_hosts = "";
+    local $xhpl_all_hosts  = "";
+	foreach (@hosts) {
+		chomp;
+#        print "+++$_\n";
+		if ($_ ne "") {
+			if ($cs == 0) {
+				$rootnode = $_;
+                @client_hosts=();
+			}else{
+				push @client_hosts,$_;
+            }
+
+            for ($i=0;$i < $smp/$mt;$i++) {
+				$hlist .= "$_\n";
+				$cs++;
+			}
+		}
+        #system("scp -f $xhplcmd $rootnode:~/");
+
+		if ($cs >= $mp) {
+            $xhpl_root_hosts .= "$rootnode\n";
+
+            $xhpl_all_hosts .= "$rootnode\n";
+            foreach(@client_hosts){
+			    $xhpl_all_hosts .= "$_\n";
+            }
+
+	        local($MPI_HOSTFILE) = "/tmp/host.openmpi.$$";
+			open(MPI_HOSTFILE, ">$MPI_HOSTFILE") || print "Can't write to $MPI_HOSTFILE";
+            print MPI_HOSTFILE $hlist;
+            close MPI_HOSTFILE;
+            system("$thiscmd $rootnode \"test -e ~/host.openmpi \&\& mv ~/host.openmpi\{,.last\}\"");
+            system("scp -q $MPI_HOSTFILE $rootnode:~/host.openmpi");
+
+			$mpcmd_string = "$thiscmd $rootnode $mpicmd -np $mp -hostfile ~/host.openmpi ".$mpirun_env." ".$command;
+
+			# Copy HPL.dat to the rootnode.
+			if ($template == 0) {
+				$xhplconf = "HPL.dat_$xhpl_out_mode.$mp";
+			} else {
+				$xhplconf = "$templatedir/HPL.dat_$mp.$template_idx";
+				$template_idx++;
+				if ($template_idx >= $template) {
+					$template_idx = 1;
+				}
+			}
+#            print "$templatedir/$xhplconf\n";
+            
+			if ( $ENV{'HOSTNAME'} ne $rootnode || $ENV{'PWD'} ne $ENV{'HOME'} ) {
+				if ( -e "$templatedir/$xhplconf" ) {
+					system("$thiscmd $rootnode \"test -e ~/HPL.dat \&\& mv ~/HPL.dat\{,.last\}\"");
+					system("scp -q $templatedir/$xhplconf $rootnode:~/HPL.dat");
+				}else{
+					print "nprsh ERROR: NO xhpl conf available!\n";
+					exit -1;
+				}
+
+				# Copy xhpl to the rootnode ONLY. Using nfs or some other techniques, up to you.
+                if ( $xhplcmd_copy == 1 ){
+                    if ( -e "$xhplcmd" ) {
+                        #zpy_copy
+                        system("$thiscmd $rootnode \"test -e ~/$xhplcmd \&\& mv ~/$xhplcmd\{,.last\}\"");
+                        system("scp -q $xhplcmd $rootnode:~/");
+
+                        foreach(@client_hosts){
+                            system("scp -q $xhplcmd $_:~/");
+                            print ".";
+                        }
+                        print "\n";
+                    }else{
+                        print "nprsh ERROR: Bad MPIAPP [$xhplcmd]!\n";
+                        exit -1;
+                    }
+                }
+			}
+
+            #ensure the hostname 
+            if( $xhpl_set_hostname_flag == 1){
+                system( "ssh -q $rootnode hostname $rootnode");
+                foreach(@client_hosts){
+                    system("ssh -q $_ hostname $_");
+                    print "+";
+                }
+                print "\n";
+            }
+
+			$pid_rexec = fork;
+			if ($pid_rexec == 0) {
+                local ($ppid)=getppid();
+                local($mpirun_out)="";
+                local($mpirun_err)="";
+
+                $mpirun_out="$mpiout_dir/$rootnode.".$xhpl_out_mode.".".$mp."NP.$ppid.out";
+                $mpirun_err="$mpiout_dir/$rootnode.".$xhpl_out_mode.".".$mp."NP.$ppid.err";
+#               print "out:[$mpirun_out],err [$mpirun_err]";
+				print "Run \"" . $mpcmd_string . "\"" . "...\n";
+				open(STDOUT, ">$mpirun_out") || print "Can't redirect stdout to $mpirun_out\n";
+				open(STDERR, ">$mpirun_err") || print "Can't redirect stderr to $mpirun_out\n";
+				#open STDERR, "| sed -e 's/^/\033\[$out_color;1m[$_]\033\[0m\/g'";
+				#open STDOUT, "| sed -e 's/^/\033\[$out_color;1m[$_]\033\[0m\/g'";
+				$mpcmd_string = "$thiscmd $rootnode sleep 20" if $debug;
+                exec($mpcmd_string);
+			}else{
+                local($mpirun_info)="";
+                local($mpirun_hosts)="";
+                $mpirun_info = "$mpiout_dir/$rootnode.".$xhpl_out_mode.".".$mp."NP.$$.info";
+                $mpirun_hosts= "$mpiout_dir/$rootnode.".$xhpl_out_mode.".".$mp."NP.$$.hosts";
+
+				open(TASK_INFO, ">$mpirun_info") || print "Can't write to $mpirun_info\n";
+				print TASK_INFO "ROOT: $rootnode\n";
+				print TASK_INFO "MPIRUN: $mpicmd\n";
+				print TASK_INFO "NP: $mp\n";
+				print TASK_INFO "HL: \n$hlist\n";
+				print TASK_INFO "CMD: $command";
+				close(TASK_INFO);
+
+                open(MPIRUN_HOSTS, ">$mpirun_hosts") || print "Can't write to mpirun host $mpirun_hosts\n";
+                print MPIRUN_HOSTS "$hlist";
+                close(MPIRUN_HOSTS);
+
+				$pids[$tid] = $pid_rexec;
+				$pid_host[$tid] = $rootnode;
+				$tid += 1;
+			}
+
+			$cs = 0;
+			$hlist = "";
+		}
+	}
+
+    local ($ppid) = getppid();
+    local $mpirun_root_hosts = "$mpiout_dir/headnodes.".$mp."NP.$ppid.hosts";
+    local $mpirun_all_hosts  = "$mpiout_dir/allnodes.".$mp."NP.$ppid.hosts";
+
+    open(MPIRUN_ROOT_HOSTS, ">$mpirun_root_hosts") || print "Can't write to mpirun root host $mpirun_root_hosts\n";
+    print MPIRUN_ROOT_HOSTS "$xhpl_root_hosts";
+    close(MPIRUN_ROOT_HOSTS);
+
+    open(MPIRUN_ALL_HOSTS, ">$mpirun_all_hosts") || print "Can't write to mpirun root host $mpirun_all_hosts\n";
+    print MPIRUN_ALL_HOSTS "$xhpl_all_hosts";
+    close(MPIRUN_ALL_HOSTS);
+
+	#goto label is lost after perlcc -B?
+	#goto WAIT_CHILD;
+
+	$returned_no = 0;
+	while (1) {
+		$next_pid = wait;
+		if ($next_pid == -1) {
+			print ("All processes have exited.\n");
+			exit 0;
+		}
+
+		$i = 0;
+		while ($pids[$i] > 0){
+			if ($pids[$i] == $next_pid) {
+				print ("Job at $pid_host[$i] have exited.\n");
+				last;
+			}
+			$i++;
+		}
+
+		$pids_returned[$returned_no] = $next_pid;
+		$returned_no += 1;
+		if ($returned_no == $tid) {
+			exit 0;
+		}
+	}
+}
+
+# Only file distribution is supported, NOT file gather!
+# Look at the position of hostname in @ARGV!
+# It is REALLY fast, but I have to check the results.
+if ($distribution == 1 && ($#hosts + 1) > $distribution_degree) {
+	use File::Basename;
+	local($command) = "";
+	local($command_str) = join(" ",@ARGV[0..@ARGV-1]);
+	local($pid_rexec);
+	local($num);
+	local($NEWcommand) = "";
+	local($origin);
+	local($originuser);
+	local($originfile);
+	local($origindir);
+	local($destdir);
+	local($last);
+
+	# nprsh [HOSTS] RCP/SCP USER@HOST:SPATH DPATH
+	# nprsh [HOSTS] RSYNC -rle SSH/RSH USER@HOST:SPATH DPATH
+	($origin, $originfile) = split(/:/, @ARGV[@ARGV-2]);
+	if ($origin =~ /@/) {
+		($originuser, $origin) = split(/@/, $origin);
+	}
+
+	#TODO Remove the $origin from @hosts IF the destdir and the src dir are identical.
+	$origindir = dirname($originfile)."/";
+	# the dest is a Path or a Path&Rename??
+	# Do keep the last "/" in $destdir.
+	$destdir = @ARGV[@ARGV-1];
+	if ($origindir eq $destdir) {
+		@hltemp =@hosts;
+		@hosts = ();
+		foreach (@hltemp) {
+			if ($_ ne $origin && $_ ne "") {
+				push @hosts,$_;
+			}
+		}
+	} else {
+		@hltemp =@hosts;
+		@hosts = ();
+		foreach (@hltemp) {
+			if ($_ ne "") {
+				push @hosts,$_;
+			}
+		}
+	}
+
+	if (($#hosts+1) < $distribution_degree) {
+		$distribution_degree = $#hosts + 1;
+	}
+	for ($i=0;$i<$distribution_degree;$i++) {
+		chomp $hosts[$i];
+		$subgroupsize = ($#hosts + 1)/$distribution_degree - 1;
+		if ($subgroupsize < 1) {
+			if ($i == 0) {
+				$children = join(",", @hosts[$distribution_degree..$#hosts]);
+			} else {
+				$children = "";
+			}
+		} else {
+			if ($i != ($distribution_degree - 1)) {
+				$last = $subgroupsize*($i+1)+$distribution_degree-1;
+			} else {
+				$last = $#hosts;
+			}
+			$children = join(",", @hosts[($subgroupsize*$i+$distribution_degree)..$last]);
+		}
+
+		$NEWcommand = $command_str;
+		$NEWcommand =~ s/$origin\:$origindir/$hosts[$i]\:$destdir/;
+		if ($children eq "") {
+			$command = "$thiscmd $hosts[$i] \"$command_str\"";
+		} else {
+			if ($i == 0) {
+				$command = "$thiscmd $hosts[$i] \"$command_str && /usr/local/bin/nprsh -on $children -D $distribution_degree -R $rl $NEWcommand\"";
+				if ($rl > 0) {
+					local($i);
+					local($str) = "==>";
+					for($i=1;$i<=$rl;$i++) {
+						$str = $str." $i ==>";
+					}
+					print "$str\n";
+				}
+			} else {
+				$command = "$thiscmd $hosts[$i] \"$command_str && /usr/local/bin/nprsh -on $children -D $distribution_degree $NEWcommand\"";
+			}
+		}
+		print "$command\n" if ($verbose);
+
+		$pid_rexec = fork;
+		if ($pid_rexec == 0) {
+			exec($command);
+		}else{
+			$pids[$i] = $pid_rexec;
+			$pid_host[$i] = $hosts[$i];
+		}
+	}
+
+	$num = 0;
+	while ($num < $distribution_degree) {
+		$goodchild = wait();
+		if ($goodchild == -1) {
+			die "waitpid() error: $!";
+		}
+		for ($i=0;$i<$distribution_degree;$i++) {
+			if ($goodchild == $pids[$i]) {
+				$num++;
+			}
+		}
+	}
+
+	#TODO Check the availability in all dest nodes.
+	exit;
+}
+
+# Run command locally.
+	if ($lexe == 1 ) {
+		local($input) = "Y";
+		local($nodes) = 0;
+		local(@slots) = (0);
+		local(@slot_dest) = ();
+		local($slotnum) = ($width - 1);
+		local($slot2wait) = 0;
+		local($slot2fill) = 0;
+		local($pid_worker) = 0;
+		local($goodchild) = 0;
+        local($commandline) = "";
+
+		if ($para == 0) {
+			foreach (@hosts){
+				chomp;
+				if ($_ ne ""){
+                    $commandline = $command_string;
+					$commandline =~ s/@@/$_/g;
+					#$command = "$thiscmd $_ $commandline";
+					if ($interactive == 1) {
+						print "Run $commandline? [Y/n]:\n";
+						$input = <STDIN>;
+						chomp $input;
+					} else {
+						print "Run $commandline\n";
+					}
+					if ($input eq "n") {
+						print "Canceled!\n";
+					} else {
+						if ($slotnum == 0) {
+							#print "Wait at slot[$slot2wait]: $slots[$slot2wait]. Slotdest: @slot_dest.\n";
+							$goodchild = waitpid($slots[$slot2wait], 0);
+						if ($goodchild == $slots[$slot2wait]) {
+							$slotnum++;
+						} elsif ($goodchild == -1) {
+							#print "No such a process.\n" if $verbose;
+							$slotnum++;
+						} else {
+							die "waitpid() error: $!";
+						}
+						$slot2wait++;
+						if ($slot2wait >= $width) {
+							$slot2wait = 0;
+						}
+					}
+					$pid_worker = fork;
+					if ($pid_worker == 0) {
+						exec($commandline);
+					}else{
+						$slots[$slot2fill] = $pid_worker;
+						$slot_dest[$slot2fill] = $_;
+						$slot2fill++;
+						if ($slot2fill >= $width) {
+							$slot2fill = 0;
+						}
+						$slotnum--;
+					}
+			    }
+			}
+		}
+
+		$goodchild = 0;
+		while ($slotnum < ($width - 1) || $goodchild != -1) {
+			$goodchild = wait();
+			if ($goodchild != -1) {
+				$slotnum++;
+			}
+		}
+		exit 0;
+	} else {
+		foreach (@hosts){
+			chomp;
+			$command = join(" ",$thiscmd,$command_string);
+			$command =~ s/@@/$_/g;
+			$command = $command."; echo \"********$_ Done!\"";
+			$pid_rexec = fork;
+			if ($pid_rexec == 0) {
+				exec($command);
+			}else{
+				$pids[$nodes] = $pid_rexec;
+				$pid_host[$nodes] = $_;
+				$nodes += 1;
+			}
+		}
+
+		$children = $nodes;
+
+		#goto WAIT_CHILD;
+		$returned_no = 0;
+		while (1) {
+			$next_pid = wait;
+			if ($next_pid == -1) {
+				print ("All processes have exited.\n");
+				exit 0;
+			}
+			$pids_returned[$returned_no] = $next_pid;
+			print ("processes $next_pid have exited.\n") if $verbose;
+			$returned_no += 1;
+
+			if ($returned_no == $children) {
+				exit 0;
+			}
+		}
+	}
+}
+
+# This mode is identical to the original "prsh" script.
+if ( $para == 0) {
+	local($input) = "Y";
+
+	foreach (@hosts){
+		chomp;
+		if ($_ ne ""){
+			if ($batch_mode == 0) {
+				$command = "$thiscmd $_ \"$command_string\"";
+				$command =~ s/@@/$_/g;
+				if ($interactive == 1) {
+					print "Run $thiscmd $_ $command_string? [Y/n]:";
+					$input = <STDIN>;
+					chomp $input;
+				} else {
+					print "Run $thiscmd $_ $command_string\n";
+				}
+				if ($input eq "n") {
+					print "Canceled\n";
+				} else {
+					system($command);
+			    }
+			} else {
+				$target = $_;
+				$batch_cmd = "";
+				$batch_0 = 1;
+				foreach (@commands) {
+					chomp;
+					if ($batch_0 == 1) {
+						$batch_cmd = $_;
+						$batch_0 = 0;
+					} else {
+						$batch_cmd = $batch_cmd.";".$_;
+					}
+				}
+				$batch_cmd = "\"".$batch_cmd."\"";
+				$command = join(" ",$thiscmd,$target,$env_path,$batch_cmd);
+				$command =~ s/@@/$_/g;
+				print "run \"" . $command . "\" on " . $_ ."......\n";
+				system($command);
+			}
+		}
+		if ($?!=0){
+			print "command failed, check the format please!\n";
+		}
+	}
+	exit;
+}
+
+$command = join(" ",$thiscmd,"NODE",$command_string);
+if ($talktive == 1) {
+	print "Run \"" . $command . "\" on:";
+
+	foreach (@hosts){
+		chomp;
+		print " $_";
+	}
+	print ".\n------------------------------OUTPUT------------------------------\n";
+}
+
+
+$index = 0;
+foreach (@hosts){
+	chomp;
+    if( $nprsh_out_color_flag){
+        $out_color++;
+        if ($out_color >= 37 ) {
+            $out_color=31;
+        }
+    }
+	if ($_ ne ""){
+		if ($batch_mode == 0) {
+			$command = join(" ", $thiscmd, $_, "\"", $command_string, "\"");
+			$command =~ s/#DD/$_/g;
+			$command =~ s/#NN/$children/g;
+			#print "$command\n";
+			#next;
+			$pid_rexec = fork;
+			if ($pid_rexec == 0) {
+                if( $nprsh_out_color_flag){
+                    open STDERR, "| sed -e 's/^/\033\[$out_color;1m[$_]\033\[0m\/g'";
+                    open STDOUT, "| sed -e 's/^/\033\[$out_color;1m[$_]\033\[0m\/g'";
+                }else{
+                    open STDERR, "| sed -e 's/^/$_\:/g'";
+                    open STDOUT, "| sed -e 's/^/$_\:/g'";
+                }
+				exec($command);
+			}else{
+				$pids[$children] = $pid_rexec;
+				$pid_host[$children] = $_;
+				$children += 1;
+			}
+		} else {
+			$target = $_;
+			$batch_cmd = "";
+			$batch_0 = 1;
+			foreach (@commands) {
+				chomp;
+				if ($batch_0 == 1) {
+					$batch_cmd = $_;
+					$batch_0 = 0;
+				} else {
+					$batch_cmd = $batch_cmd.";".$_;
+				}
+			}
+			$batch_cmd = "\"".$batch_cmd."\"";
+
+			$command = join(" ",$thiscmd,$target,$env_path,$batch_cmd);
+			$command =~ s/#DD/$_/g;
+			$command =~ s/#NN/$children/g;
+			$pid_rexec = fork;
+			if ($pid_rexec == 0) {
+				exec($command);
+			}else{
+				$pids[$children] = $pid_rexec;
+				$pid_host[$children] = $_;
+				$children += 1;
+			}
+		}
+	}
+	if ($?!=0){
+		print "Command failed, check the format please!\n";
+	}
+}
+
+
+WAIT_CHILD:
+$returned_no = 0;
+while (1) {
+	$next_pid = wait;
+	if ($next_pid == -1) {
+		print ("All processes have exited.\n");
+		exit 0;
+	}
+	$pids_returned[$returned_no] = $next_pid;
+	print ("processes $next_pid have exited.\n") if $verbose;
+	$returned_no += 1;
+
+	if ($returned_no == $children) {
+        # I need a better framework to do cleanup.
+		unlink $thiscmd if ($thiscmdunlink == 1);
+		exit 0;
+	}
+}
+
+# vi:ts=4:sw=4::

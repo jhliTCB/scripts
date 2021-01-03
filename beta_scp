@@ -1,0 +1,37 @@
+#!/bin/bash
+control=$1
+flags=$#
+user='jhli'
+ip='192.169.1.101'
+port='1874'
+
+case $control in
+   (S | s | send)
+   if  [ $flags -lt 4 ]; then
+      scp -P $port -r $2 ${user}@${ip}:$3
+   else
+      remote=$(echo $* | awk '{print $NF}')
+      ((flags-=1))
+      range=$(seq 2 $flags)
+      LocaLs=$(for i in $range; do eval pp=$(echo \$$i); echo "${pp}"; done)
+           scp -P $port -r $LocaLs ${user}@${ip}:$remote
+   fi
+   ;;
+
+   (c | copy | r | R)
+   if [ $flags -lt 4 ]; then
+           scp -P $port -r ${user}@${ip}:$2 $3
+   else
+      LocaL=$(echo $* | awk '{print $NF}')
+      ((flags-=1));
+      range=$(seq 2 $flags)
+      remotes=$(for i in $range; do eval pp=$(echo \$$i); echo "${pp}  \\"; done)
+      scp -P $port -r ${user}@${ip}:"$remotes" $LocaL
+   fi
+   ;;
+
+   (*)
+   echo -e "\nbeing lazy of inputing ip for scp?\n./$0 S/s/send locals remote\n./$0 c/copy/r/R remotes local\n"
+   exit
+   ;;
+esac

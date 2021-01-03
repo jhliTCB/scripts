@@ -1,0 +1,185 @@
+#!/bin/bash
+module load turbovnc_2.2.5
+XVNC='vncserver'
+
+usage() {
+   >&2 cat <<_EOF
+
+localhost_vncserver usage:
+Two modes: 1) set up a VNC server; 2) kill a VNC server
+1). localhost_vncserver [OPTION] :DISPLAYPORT
+2). localhost_vncserver -k :DISPLAYPORT
+
+OPTIONS:
+   -h: display this message
+   -d: dispaly port number with ':' on the left, e.g. :1
+   -g: geometry or window size, e.g. '1920x1080', if ommit, default is 1366x768
+   -k: to kill a display port, e.g. -k :1
+   -l: to list all Xvnc servers running comands
+   -s: thinlinc-like session or default session, available options: 'tl', if ommit, tl-like session is used
+   -q: quiet mode, don't print dos cmd example
+
+example:
+   localhost_vncserver -d :1 -g 1920x1080 -s tl
+   localhost_vncserver -g 1920x1080 (the display port will be told)
+   localhost_vncserver -k :1
+   localhost_vncserver -l
+
+_EOF
+}
+
+Xstartup () {
+if [ $1 = 'tl' ]; then
+   Display=$2
+#non-root: rpm2cpio tl-server-xx.rpm | cpio -div
+   >&2 cat <<_EOF
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+export TLPREFIX=/opt/thinlinc
+#export TLPREFIX=/home/jhli/Program/tl-server4.9/thinlinc
+
+export PATH=\${TLPREFIX}/bin:\$PATH
+export LD_LIBRARY_PATH=\${TLPREFIX}/lib64:\$LD_LIBRARY_PATH
+#export TLSESSIONDATA=/var/opt/thinlinc/sessions/$USER/$Display
+export TLSESSIONDATA=/tmp/$USER/$Display
+export PYTHONPATH==\${TLPREFIX}/modules:\$PYTHONPATH
+\$TLPREFIX/etc/xsession &
+_EOF
+
+elif [ $1 = 'default' ]; then
+   >&2 cat <<_EOF
+#!/bin/sh
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+exec /etc/X11/xinit/xinitrc
+startkde
+_EOF
+fi
+}
+
+if [ $# -eq 0 ]
+then
+   usage
+   exit 0
+fi
+
+while getopts :hd:lg:k:s:q opt; do
+   case $opt in
+   h)
+      usage
+      exit 0
+   ;;
+   d)
+      display=$OPTARG
+   ;;
+   g)
+      geom=$OPTARG
+   ;;
+   k)
+      KILL=$OPTARG
+   ;;
+   l)
+      LIST='Xvnc'
+   ;;
+   s)
+      session=$OPTARG
+   ;;
+   v)
+      verbose=1
+   ;;
+   ?)
+      echo "unkonw argument"
+      usage
+      exit 1
+   ;;
+   esac
+done
+   
+NUM_DISPLAYS=$(ps -ef | grep Xvnc | grep localhost | wc -l)
+USER_DISPLAYS=$(ps -ef | grep Xvnc | grep localhost | grep "^$USER  " | wc -l)
+DISPLAYPORTS=$(ps -ef | grep Xvnc | grep localhost | tr "\ " "\n" | grep "^\:[0-9]")
+
+if [[ ! -z $LIST ]]; then
+   >&2 cat <<_EOF
+
+Currently running Xvnc servers:
+$(ps -ef | grep -i Xvnc | sed "/grep/d;G")
+
+with loccalhost:
+$(ps -ef | grep -i Xvnc | grep localhost | sed G)
+
+_EOF
+   exit 0
+fi
+
+if [[ -z $KILL ]]; then
+   if [[ -z $display ]]; then EMTDD='NO_d_option'; ((di=NUM_DISPLAYS+1)); display=":$di"; fi
+   if [[ -z $geom ]]; then geom=1200x700; fi
+   if [[ -z $session ]]; then session=tl; fi
+   
+   if [ $USER_DISPLAYS -ge 1 ]
+   then
+      echo -e  "You had ran a vnc server, the number of VNCserver is only \033[31mONE\033[0m for each USER"
+      echo -e "The vncserver running by $USER is:\n"
+      echo -e  "\033[31m$(ps -ef | grep Xvnc | grep localhost | grep $USER)\033[0m\n"
+      exit 1
+   fi
+   
+   if [[ ! -z $DISPLAYPORTS ]]; then
+      for i in $(echo -e "$DISPLAYPORTS" | sort -n); do
+         if [[ $display == $i ]]; then
+            if [[ ! -z $EMTDD ]]; then
+               ((di+=1))
+               display=":$di"
+            fi
+            other=$(ps -ef | grep Xvnc | grep localhost | grep "vnc $i" | awk '{print $1}')
+            echo -e "\nThe display port \033[31m$display\033[0m is already occuppied by \033[31m$other\033[0m"
+            echo -e "The existing Xvnc processors are:\n $(ps -ef | grep Xvnc | grep localhost)\n"
+            echo -e "please use an alternative port number from :1 to :100\n"
+            exit 1
+         fi
+      done
+   fi
+   
+   mkdir -p $HOME/.vnc
+   chmod 700 $HOME/.vnc
+   
+   if [[ ${display:0:1} != ':' ]]; then echo unkonw display port option; usage; exit 1; fi
+   if [[ -z $(echo $geom | grep 'x' | grep [0-9]) ]]; then echo unkonw geometry option; usage; exit 1; fi
+   if [ $session != 'tl' -a $session != 'default' ]; then echo unkonw session option; usage; exit 1; fi
+
+#   Xstartup $session ${display:1} >& $HOME/.vnc/xstartup
+#   chmod 777 $HOME/.vnc/xstartup
+   Xstartup $session ${display:1} >& $HOME/.vnc/xstartup.turbovnc
+   chmod 777 $HOME/.vnc/xstartup.turbovnc
+   #TLSESSIONDATA=/var/opt/thinlinc/sessions/$USER/${display:1}
+   TLSESSIONDATA=/tmp/$USER/${display:1}
+   mkdir -p /tmp/$USER
+   mkdir -p $TLSESSIONDATA
+   $XVNC $display -depth 24 -geometry $geom -nolisten tcp  -localhost -nohttpd
+   echo -e "The \$DISPLAY is $display, putty/mobaXterm forwarding port is 590${display:1}\n"
+   if [[ ! -z $verbose ]]; then
+      echo -e "Portable version of putty: https://the.earth.li/~sgtatham/putty/latest/w64/putty.exe"
+      echo -e "Download and Install the Thinlinc client\n\nExample cmd script:\n\n"
+      echo -e "@echo off\nSETLOCAL ENABLEDELAYEDEXPANSION"
+      echo -e "start /b putty.exe -ssh -X -C -L 590${display:1}:localhost:590${display:1} $USER@beta.theochem.kth.se 1874"
+      echo -e "timeout 10"
+      echo -e "set Path=%path%;\"C:\\Program Files (x86)\\ThinLinc Client\""
+      echo -e "start /b vncviewer.exe localhost:590${display:1}\nexit\n"
+      echo -e "\nAlteratively, other vncviewer like tigervncviewer also works\n"
+   fi
+
+elif [ ! -z $geom ] || [ ! -z $session ]; then
+   echo -e "the -k option couldn't run togther with -g or -s options"
+   echo -e "$display $geom $session"
+   usage
+   exit 1
+elif [[ ${KILL:0:1} != ':' ]]; then
+   echo unkonw option
+   usage
+   exit 1
+else
+   $XVNC -kill $KILL
+   rm -f $HOME/.vnc/*${KILL:1}*.log /tmp/.X${KILL:1}-lock /tmp/.X11-unix/X${KILL:1} >& /dev/null
+fi

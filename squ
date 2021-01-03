@@ -1,0 +1,29 @@
+#!/bin/bash
+#for lines, tput lines
+resize >& /dev/null
+if [ $(tput cols) -lt 150 ]
+then
+    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %10R'
+else
+    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %Z'
+fi
+
+DF="$(echo -e "$format" | sed s/JN/20/g)"
+
+if [ -z $1 ]
+then
+   squeue -u $USER -o "$DF" | sort -k10n
+else
+   case "$1" in
+      [1-9]*)
+      NF="$(echo -e "$format" | sed s/JN/$1/g)"
+      squeue -u $USER -o "$NF" | sort -k10n
+      ;;
+      -[a-z]*|--[a-z]*)
+      squeue -u $USER $1 | sort -k10n
+      ;;
+      *)
+      squeue -u $1 -o "$DF" | sort -k10n
+      ;;
+   esac
+fi
