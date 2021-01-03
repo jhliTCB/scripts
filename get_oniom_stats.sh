@@ -54,6 +54,10 @@ fi
 i=1
 for f in $(echo $*); do
    if [ $f != $TYPE_FLAG_ ] && [ -f $f ]; then
+      #if [ $(grep "Stationary point" $f | wc -l) -lt 1 ]; then
+      #   echo "$f is not a gaussian log file or the optimization doesn't finished yet"
+      #   continue
+      #fi
       if [ $i -eq 1 ]; then
          get_ener $f $TYPE_FLAG_ 'Title'
          ((i+=1))

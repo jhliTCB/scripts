@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
-import sys
+import argparse
+
 xyz, REM = {}, {}
 stat_ind = {}
 OP, SP   = -1, 0
@@ -10,6 +11,7 @@ flag     = 'NULL'
 # 'extrapolated energy'
 # SCF energy:
 # 'SCF Done'
+# ONIOM input template; -output keywords, procs, mem, linda
 
 def out_pdb(ATNB, atom, resn, resi, XYZ, ltom, j):
    format1  = '%-6s%5d %-5s%-4s%5d%12.3f%8.3f%8.3f%6.2f%6.2f%12s\n'
@@ -21,10 +23,25 @@ def out_pdb(ATNB, atom, resn, resi, XYZ, ltom, j):
       PDB  = tuple(['ATOM', ATNB, atom, resn, int(resi)]) + XYZ + tuple([0, 0, ltom])
       return(format2 % PDB)
 
-if len(sys.argv) == 4:
-   mod = open(sys.argv[1], 'r')
-   log = open(sys.argv[2], 'r')
-   eOP = sys.argv[3]
+parser = argparse.ArgumentParser()
+parser.add_argument("-m", "--model", type=str, nargs='?', default='NONE',
+                    help="The template PDB for copying residue and atom names")
+parser.add_argument("-g", "--log", type=str, nargs='?', default='gau.log',
+                    help="The Gaussian log file, either PES scanning or optimizations")
+parser.add_argument("-e", "--eOP", type=str, nargs='?', default='all',
+                    help='''all:    all intemediates and stationaries;                                 \
+                          end:    the last step or stationary point;                                 \
+                          steps:  tell the total number of opt steps;                                \
+                          all_stats: save all stationary points in an opt or scan job into PDB;      \
+                          stat:   tell the total number of stationary points;                        \
+                          N: save the xyz of step N into a PDB file''')
+                          
+args = parser.parse_args()
+log = open(args.log, 'r')
+eOP = args.eOP
+
+if not args.model == 'NONE':
+   mod = open(args.model, 'r')
    ATOM, RESN, RESI = [], [], []
    for line in mod:
       lin_lst = line.split()
@@ -32,10 +49,8 @@ if len(sys.argv) == 4:
          ATOM.append(lin_lst[2])
          RESN.append(lin_lst[3])
          RESI.append(lin_lst[4])
-elif len(sys.argv) == 3:
+else:
    ATOM = []
-   log = open(sys.argv[1], 'r')
-   eOP = sys.argv[2]
 
 for line in log:
    # make flags for the corrdinates
