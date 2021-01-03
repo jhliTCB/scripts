@@ -1,0 +1,8 @@
+#!/bin/bash
+if [ ! -z $2 ] && [ $2 = "X" ]; then
+   echo -e "$(grep -n "Converged\|Step number\|YES\| NO \|Coordinate" $1)"
+elif [ ! -z $2 ] && [ $2 = 'E' ]; then
+   echo -e "$(grep -n "Converged\|Step number\|YES\| NO \| SCF Done" $1)"
+else
+   echo -e "$(grep -n "Converged\|Step number\|YES\| NO " $1)"
+fi
