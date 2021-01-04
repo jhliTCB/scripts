@@ -1,23 +1,22 @@
 #!/bin/bash
-# used to see cluster top info when job management system is not installed
-# required nprsh: Last Change: 2009-06-16 18:15.
-# required a rsa-key.pub to other nodes 
+# to view jobs on a cluster when there are no job management systems (e.g. SLURM)
+# requires nprsh: "Last Change: 2009-06-16 18:15."
+# requires a rsa-key.pub to other nodes 
 
 myself=$0
-NPRSH_PAHT="/home/jhli/Program/nprsh"
-NODEs='node0...24'
-
-CDEF=" \033[0m"     ;  b_CDEF=" \033[1m" 
-CRED=" \033[0;31m"  ;  b_CRED=" \033[1;31m"
-CCYA=" \033[0;36m"  ;  b_CCYA=" \033[1;36m"
-CMAG=" \033[0;35m"  ;  b_CMAG=" \033[1;35m"
-CBLU=" \033[0;34m"  ;  b_CBLU=" \033[1;34m"
-CGRE=" \033[0;32m"  ;  b_CGRE=" \033[1;32m"
-CYEL=" \033[0;33m"  ;  b_CYEL=" \033[1;33m"
+NODEs="node0...24"
+NPRSH="/home/jhli/Program/nprsh"
 
 colorful ()
 {
-cllist=("$b_CCYA" "$b_CMAG" "$b_CBLU" "$b_CYEL" "$b_CGRE")
+CDEF=" \033[0m"     ;  b_CDEF=" \033[1m"      # default; bold_default
+CRED=" \033[0;31m"  ;  b_CRED=" \033[1;31m"   # red;     bold_red
+CCYA=" \033[0;36m"  ;  b_CCYA=" \033[1;36m"   # cyan;    bold_cyan
+CMAG=" \033[0;35m"  ;  b_CMAG=" \033[1;35m"   # magenta; bold_magenta
+CBLU=" \033[0;34m"  ;  b_CBLU=" \033[1;34m"   # blue;    bold_blue
+CGRE=" \033[0;32m"  ;  b_CGRE=" \033[1;32m"   # green;   bold_green
+CYEL=" \033[0;33m"  ;  b_CYEL=" \033[1;33m"   # yellow;  bold_yellow
+cllist=("$b_CCYA" "$b_CMAG" "$b_CBLU" "$b_CYEL" "$b_CRED")
 num_line=$(echo "$1" | wc -l)
 for i in $(seq 1 $num_line); do
     sinline=$(echo "$1" | sed -n ${i}p)
@@ -26,7 +25,7 @@ for i in $(seq 1 $num_line); do
         pnode=$(echo "$1" | sed -n $[i-1]p | awk '{print $1}')
     fi
     if [[ ! -z $(echo "$sinline" | grep "THIS IS A FREE NODE") ]]; then
-        echo -e "${b_CRED}${sinline}${CDEF}"
+        echo -e "${b_CGRE}${sinline}${CDEF}"
     elif [[ ! -z $(echo "$sinline" | grep "No route to host") ]]; then
         echo -e "${CDEF}${sinline}${CDEF}"
     else
@@ -40,10 +39,23 @@ for i in $(seq 1 $num_line); do
 done
 }
 
+mem_conv ()
+{
+mem="$1"
+if [[ $mem =~ "g" ]]; then
+    mem=${mem/g/}
+elif [[ $mem =~ "t" ]]; then
+    mem=$(echo ${mem/t/} | awk '{print $1*1024}')
+else
+    mem=$(echo "$mem" | awk '{$1=$1/1024/1024; printf "%.2f", $1}')
+fi
+echo "$mem"
+}
+
 if [ -z $1 ] || [ $1 = 'full' ]; then
     [[ $1 = 'full' ]] && comlen=10000 || comlen=100
     echo "USER:RES(GB):%CPU:COMMAND" | awk -F':' '{printf "%20s %20s %10s %-80s\n", $1,$2,$3,$4}'
-    out=$($NPRSH_PATH -nc -on "$NODEs" "${myself} LocalNodeInfo $comlen" 2> /dev/null)
+    out=$($NPRSH -nc -on "$NODEs" "${myself} LocalNodeInfo $comlen" 2> /dev/null)
     OUT=$(echo "$out" | sort -k2n -t'e')
     colorful "$OUT"
     echo
@@ -72,7 +84,7 @@ if [[ $1 = 'LocalNodeInfo' ]]; then
             line=($(echo "$sinfo" | sed -n ${i}p))
             user=${line[$ind_user]}
             resm=${line[$ind_memo]}
-            [[ $resm =~ "g" ]] && resm=${resm/g/} || resm=$(echo "$resm" | awk '{$1=$1/1024/1024; printf "%.2f", $1}')
+            resm=$(mem_conv $resm)
             pcpu=${line[$ind_pcpu]}
             cmdl=${line[@]:$ind_cmdl:10000} # it should output blank for outage!
         fi
@@ -83,7 +95,7 @@ if [[ $1 = 'LocalNodeInfo' ]]; then
             if [[ $user = $p_user ]]; then
                 flag=1
                 p_resm=${p_line[$ind_memo]}
-                [[ $p_resm =~ "g" ]] && p_resm=${p_resm/g/} || p_resm=$(echo "$p_resm" | awk '{$1=$1/1024/1024; printf "%.2f", $1}')
+                p_resm=$(mem_conv $p_resm)
                 p_pcpu=${p_line[$ind_pcpu]}
                 resm=$(echo ${resm} ${p_resm} | awk '{sum=$1+$2; printf "%.2f", sum}')
                 pcpu=$(echo $pcpu $p_pcpu | awk '{$1=$1+$2; print $1}')
