@@ -1,29 +1,127 @@
 #!/bin/bash
-#for lines, tput lines
+# A simple wrapper for squeue, bash 4.0+
+# by Junhao Li@TCB
+
+USAGE()
+{
+echo
+echo "available arguments: "
+echo "   -h | --help             print the help information"
+echo "   -P | --show_partition   number (optional, default is 10)"
+echo "   -U | --User_list        user1,user2,user3 (required when -U is used)"
+echo "   -j | --job_length       number (optional, default is 20)"
+echo "   -p | --workidng_dir     number (optional, default is a full path)"
+echo "   -a | --show_account     number (optional, default is 15)"
+echo "   -A | --tcb_users"
+echo "    *                      other arguments pass to squeue"
+echo
+}
+
 resize >& /dev/null
-if [ $(tput cols) -lt 150 ]
-then
-    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %10R'
-else
-    format='%.12i %.8P %.JNj %.8u %.2t %.10M %.10l %.4D%.5C %16V %Z'
+
+[[ -z $1 ]] && squeue -u $USER -o ' %10i %15a %20j %8u %3t %10M %10l %4D%5C %20V %Z' && exit 0
+
+squeueArgs=()
+TCBUserList="user1,user2,user3"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in 
+    -P | --show_partition)
+    if [[ -z $2 || ${2:0:1} == '-' ]]; then
+        showPartition="%10P"
+        shift 1
+    elif [[ "$2" -gt 0 ]]; then
+        showPartition="%${2}P"
+        shift 2
+    else
+        echo "please input nothing or a number after -P"
+        exit 1
+    fi
+    ;;
+    -U | --User_list) #user1,user2,.. or user1
+    if [[ -z $showTCBUsers ]]; then
+        if [[ ! -z $2 ]]; then
+            userList="-u ${2}"
+            shift 2
+        else
+            echo "Warning: please give a user after -U"
+            echo "showing information of $USER"
+            shift 1
+        fi
+    else
+        echo "-U could not be used with -A!"
+        exit 1
+    fi    
+    ;;
+    -j | --job_length)
+    [[ "$2" -gt 0 ]] && jobLength="%${2}j" || (echo "Warning: please give number after -j" && exit 1)
+    shift 2
+    ;;
+    -p | -wd | --working_dir)
+    if [[ -z $2 || ${2:0:1} == '-' ]]; then
+        showWorkingDir="%Z"
+        shift 1
+    elif [[ "$2" -gt 0 ]]; then
+        showWorkingDir="%${2}Z"
+        shift 2
+    else
+        echo "please input nothing or a number after -p"
+        exit 1
+    fi    
+    ;;
+    -a | --show_account)
+    if [[ -z $2 || ${2:0:1} == '-' ]]; then
+        showAccount="%15a"
+        shift 1
+    elif [[ "$2" -gt 0 ]]; then
+        showAccount="%${2}a"
+        shift 2
+    else
+        echo "please input nothing or a number after -a"
+        exit 1
+    fi
+    ;;
+    -A | --tcb_users)
+    if [[ ! -z userList ]]; then
+        showTCBUsers="-u $TCBUserList" 
+    shift 1
+    else
+        echo "-A could not be used with -u!"
+        exit 1
+    fi
+    ;;
+    -s | --star | --start)
+    showStartTime="--start"
+    shift 1
+    ;;
+    -aAp | -apA | -Aap | -Apa | -paA | -pAa)
+    [[ ! -z $2 ]] && echo "-aAp follows nothing" && exit 1
+    showAccount="%15a"
+    showTCBUsers="-u $TCBUserList"
+    showWorkingDir="%Z"
+    shift 1
+    ;;
+    -h | --help)
+    USAGE
+    exit 0
+    ;;
+    *) # Other argurement pass to squeue!
+    squeueArgs=(${squeueArgs[*]} $1)
+    shift 1
+    ;;
+    esac
+done
+
+[[ -z $jobLength ]] && jobLength="%20j"
+
+if [[ -z $userList && -z $showTCBUsers ]]; then
+    userToShow="-u $USER"
+elif [[ ! -z $userList ]]; then
+    userToShow=$userList
+elif [[ ! -z $showTCBUsers ]]; then
+    userToShow=$showTCBUsers
 fi
 
-DF="$(echo -e "$format" | sed s/JN/20/g)"
+format=$(echo " %10i $showPartition $showAccount $jobLength %8u %3t %10M %10l %4D%5C %20V $showWorkingDir")
 
-if [ -z $1 ]
-then
-   squeue -u $USER -o "$DF" | sort -k10n
-else
-   case "$1" in
-      [1-9]*)
-      NF="$(echo -e "$format" | sed s/JN/$1/g)"
-      squeue -u $USER -o "$NF" | sort -k10n
-      ;;
-      -[a-z]*|--[a-z]*)
-      squeue -u $USER $1 | sort -k10n
-      ;;
-      *)
-      squeue -u $1 -o "$DF" | sort -k10n
-      ;;
-   esac
-fi
+squeue $userToShow -o "$format" $showStartTime ${squeueArgs[@]}
